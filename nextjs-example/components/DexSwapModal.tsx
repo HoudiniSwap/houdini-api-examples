@@ -272,17 +272,55 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
 
       // ── Step 6: Broadcast on-chain tx (if required) ──────────────────────
       const meta = exchange.metadata;
-      if (exchange.actionRequired && meta?.to) {
+      if (meta?.to) {
         updateStep('broadcast', 'active', 'Confirm transaction in wallet...');
         if (fromChainId) await switchToChain(fromChainId);
+
+        const publicClient = getViemPublicClient(fromChainId!);
+        const txValue = meta.value ? BigInt(meta.value) : undefined;
+
+        // Estimate gas with 120% buffer
+        const [estimatedGas, feeData] = await Promise.all([
+          publicClient.estimateGas({
+            account: address,
+            to: meta.to as `0x${string}`,
+            data: meta.data as `0x${string}`,
+            value: txValue,
+          }),
+          publicClient.estimateFeesPerGas(),
+        ]);
+        const GAS_BUFFER = BigInt(120);
+
         const hash = await sendTransactionAsync({
+          chainId: fromChainId,
           to: meta.to as `0x${string}`,
           data: meta.data as `0x${string}`,
-          value: BigInt(meta.value ?? 0),
+          value: txValue,
+          gas: estimatedGas,
+          ...(feeData.maxFeePerGas && feeData.maxPriorityFeePerGas ? {
+            maxFeePerGas: (feeData.maxFeePerGas * GAS_BUFFER) / BigInt(100),
+            maxPriorityFeePerGas: (feeData.maxPriorityFeePerGas * GAS_BUFFER) / BigInt(100),
+          } : {}),
         });
-        updateStep('broadcast', 'active', 'Waiting for confirmation...');
-        await getViemPublicClient(fromChainId!).waitForTransactionReceipt({ hash });
-        updateStep('broadcast', 'done');
+
+        updateStep('broadcast', 'active', 'Waiting for on-chain confirmation...');
+        await publicClient.waitForTransactionReceipt({ hash });
+
+        // Confirm tx with Houdini API (up to 5 retries)
+        updateStep('broadcast', 'active', 'Confirming with Houdini...');
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            const confirmRes = await fetch('/api/dex/confirm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ houdiniId: exchange.houdiniId, txHash: hash }),
+            });
+            if (confirmRes.ok) break;
+          } catch { /* retry */ }
+          await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+        }
+
+        updateStep('broadcast', 'done', `Tx: ${hash.slice(0, 10)}…`);
       } else {
         updateStep('broadcast', 'skipped');
       }
