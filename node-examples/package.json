@@ -1,0 +1,23 @@
+{
+  "name": "houdini-node-examples",
+  "version": "1.0.0",
+  "description": "TypeScript examples for integrating with Houdini Swap API",
+  "main": "index.js",
+  "repository": "https://github.com/houdini-docs/houdini-node-examples.git",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "run:dex": "ts-node examples/dex-swap-example.ts",
+    "run:standard": "ts-node examples/standard-swap-example.ts",
+    "run:private": "ts-node examples/private-swap-example.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "viem": "^2.44.1"
+  }
+}

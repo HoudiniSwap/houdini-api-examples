@@ -1,0 +1,148 @@
+import { cookieStorage, createStorage } from 'wagmi';
+import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
+import { SolanaAdapter } from '@reown/appkit-adapter-solana';
+import { BitcoinAdapter } from '@reown/appkit-adapter-bitcoin';
+import {
+arbitrum,
+  aurora,
+  avalanche,
+  base,
+  berachain,
+  bevmMainnet,
+  bitcoin,
+  bitgert,
+  bitlayer,
+  blast,
+  bob,
+  bounceBit,
+  bsc,
+  celo,
+  coreDao,
+  cronos,
+  defineChain,
+  fantom,
+  gnosis,
+  gravity,
+  hemi,
+  hychain,
+  iota,
+  kava,
+  linea,
+  lukso,
+  lumiaMainnet,
+  mainnet,
+  manta,
+  mantle,
+  merlin,
+  metis,
+  mode,
+  moonbeam,
+  moonriver,
+  morph,
+  okc,
+  opBNB,
+  optimism,
+  plumeMainnet,
+  polygon,
+  pulsechain,
+  rootstock,
+  scroll,
+  sepolia,
+  solana,
+  sonic,
+  story,
+  taiko,
+  telos,
+  theta,
+  tron,
+  wanchain,
+  worldchain,
+  zetachain,
+  zilliqa,
+  zkLinkNova,
+  zksync,
+} from '@reown/appkit/networks';
+import type { AppKitNetwork } from '@reown/appkit/networks';
+
+export const projectId = process.env.NEXT_PUBLIC_PROJECT_ID ?? '';
+
+if (!projectId) {
+  console.warn('NEXT_PUBLIC_PROJECT_ID is not set. Get one at https://dashboard.reown.com');
+}
+
+// EVM-only networks for wagmi (excludes Solana, Bitcoin, Tron)
+export const evmNetworks: [AppKitNetwork, ...AppKitNetwork[]] = [
+  mainnet,
+  arbitrum,
+  aurora,
+  avalanche,
+  base,
+  berachain,
+  bevmMainnet,
+  bitgert,
+  blast,
+  bob,
+  bsc,
+  celo,
+  cronos,
+  fantom,
+  gnosis,
+  kava,
+  linea,
+  manta,
+  mantle,
+  merlin,
+  metis,
+  mode,
+  moonbeam,
+  moonriver,
+  okc,
+  opBNB,
+  optimism,
+  polygon,
+  rootstock,
+  scroll,
+  taiko,
+  wanchain,
+  worldchain,
+  zkLinkNova,
+  zksync,
+  telos,
+  coreDao,
+  bitlayer,
+  zetachain,
+  theta,
+  gravity,
+  bounceBit,
+  morph,
+  hychain,
+  pulsechain,
+  sepolia,
+  sonic,
+  lumiaMainnet,
+  hemi,
+  lukso,
+  plumeMainnet,
+  zilliqa,
+  iota,
+  story,
+];
+
+// All networks including non-EVM (for AppKit UI)
+export const networks: [AppKitNetwork, ...AppKitNetwork[]] = [
+  ...evmNetworks,
+  tron,
+  solana,
+  bitcoin,
+];
+
+export const wagmiAdapter = new WagmiAdapter({
+  storage: createStorage({ storage: cookieStorage }),
+  ssr: true,
+  projectId,
+  networks: evmNetworks,
+});
+
+export const solanaAdapter = new SolanaAdapter();
+
+export const bitcoinAdapter = new BitcoinAdapter({ projectId });

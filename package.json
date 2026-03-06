@@ -1,0 +1,11 @@
+{
+  "name": "houdini-examples",
+  "version": "1.0.0",
+  "description": "Examples for integrating with the Houdini Swap API",
+  "private": true,
+  "license": "MIT",
+  "workspaces": [
+    "node-examples",
+    "nextjs-example"
+  ]
+}
