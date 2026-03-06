@@ -9,7 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^3.0.1",
     "@reown/appkit": "^1.8.12",
     "@reown/appkit-adapter-bitcoin": "^1.8.12",
     "@reown/appkit-adapter-solana": "^1.8.12",
