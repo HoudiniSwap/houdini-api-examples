@@ -295,6 +295,38 @@ export interface QuotesResponse {
 }
 
 // ============================================================================
+// Order Details (GET /v2/orders/{houdiniId})
+// ============================================================================
+
+export interface OrderDetails {
+  _id: string;
+  houdiniId: string;
+  status: number;
+  statusLabel: string;
+  inStatus: number;
+  inStatusLabel: string;
+  outStatus: number;
+  outStatusLabel: string;
+  depositAddress: string;
+  depositTag: string;
+  transactionHash: string;
+  hashUrl: string;
+  receiverAddress: string;
+  receiverTag: string;
+  inAmount: number;
+  inSymbol: string;
+  outAmount: number;
+  outSymbol: string;
+  anonymous: boolean;
+  expires: string;
+  created: string;
+  eta: number;
+  isDex: boolean;
+  actionRequired: boolean;
+  nonRefundable?: boolean;
+}
+
+// ============================================================================
 // Utility Types
 // ============================================================================
 

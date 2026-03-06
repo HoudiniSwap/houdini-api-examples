@@ -136,8 +136,8 @@ export function QuoteList({ quotes, selectedQuoteId, toToken, onSelect }: QuoteL
                   </div>
                   <p className="text-xs text-gray-400 mt-0.5 truncate">
                     {formatDuration(q.duration)}
-                    {q.feeUsd != null && q.feeUsd > 0 && ` · fee $${q.feeUsd.toFixed(2)}`}
-                    {q.gasUsd != null && q.gasUsd > 0 && ` · gas $${q.gasUsd.toFixed(2)}`}
+                    {q.feeUsd != null && q.feeUsd > 0 && ` · fee $${q.feeUsd}`}
+                    {q.gasUsd != null && q.gasUsd > 0 && ` · gas $${q.gasUsd}`}
                   </p>
                 </div>
 
@@ -148,7 +148,7 @@ export function QuoteList({ quotes, selectedQuoteId, toToken, onSelect }: QuoteL
                     {toToken?.symbol ? ` ${toToken.symbol}` : ''}
                   </p>
                   {q.amountOutUsd != null && (
-                    <p className="text-xs text-gray-400">≈ ${q.amountOutUsd.toFixed(2)}</p>
+                    <p className="text-xs text-gray-400">≈ ${q.amountOutUsd}</p>
                   )}
                 </div>
               </div>

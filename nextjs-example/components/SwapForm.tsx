@@ -171,8 +171,8 @@ export function SwapForm() {
                 {selectedQuote ? formatAmount(selectedQuote.amountOut) : '0.0'}
               </p>
             )}
-            {selectedQuote?.amountOutUsd != null && !quoteLoading && (
-              <p className="text-xs text-gray-400 mt-0.5">≈ ${selectedQuote.amountOutUsd.toFixed(2)}</p>
+            {selectedQuote?.amountOutUsd && !quoteLoading && (
+              <p className="text-xs text-gray-400 mt-0.5">≈ ${selectedQuote.amountOutUsd}</p>
             )}
           </div>
         </div>
