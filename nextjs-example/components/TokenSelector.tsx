@@ -11,6 +11,7 @@ export interface Token {
     chainId: number;
     shortName: string;
     name: string;
+    kind?: string; // 'evm' | 'solana' | 'bitcoin'
   };
   price?: number;
 }

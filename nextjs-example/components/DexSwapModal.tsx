@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
+import { useAppKitAccount } from '@reown/appkit/react';
 import { useAccount, useSendTransaction, useSignTypedData, useConfig } from 'wagmi';
 import { createPublicClient, http } from 'viem';
 import type { Quote, Signature, SignatureObject } from '@/lib/types';
@@ -70,7 +71,14 @@ function StepIcon({ status }: { status: StepStatus }) {
 }
 
 export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo, onClose }: DexSwapModalProps) {
-  const { address, connector } = useAccount();
+  const eip155Account = useAppKitAccount({ namespace: 'eip155' });
+  const solanaAccount = useAppKitAccount({ namespace: 'solana' });
+  const bip122Account = useAppKitAccount({ namespace: 'bip122' });
+  const kind = fromToken.chainData?.kind?.toLowerCase() ?? '';
+  const address = (kind === 'sol') ? solanaAccount.address
+    : (kind === 'bitcoin') ? bip122Account.address
+    : eip155Account.address;
+  const { connector } = useAccount();
   const config = useConfig();
   const { sendTransactionAsync } = useSendTransaction();
   const { signTypedDataAsync } = useSignTypedData();
@@ -81,6 +89,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
   const [error, setError] = useState<string | null>(null);
   const [houdiniId, setHoudiniId] = useState<string | null>(null);
   const [swapStatus, setSwapStatus] = useState<number | null>(null);
+  const [pendingTxData, setPendingTxData] = useState<{ to: string; data: string; value: string } | null>(null);
 
   // Poll swap status after exchange is submitted
   useEffect(() => {
@@ -143,7 +152,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
     for (const sig of signatures) {
       const typedData = sig.data;
       const signature = await signTypedDataAsync({
-        account: address,
+        account: address as `0x${string}`,
         domain: typedData.domain,
         types: typedData.types,
         primaryType: typedData.primaryType,
@@ -173,7 +182,9 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
   }, [signTypedDataAsync, address, quote.quoteId]);
 
   async function runFlow() {
-    if (!address) { setError('Wallet not connected'); return; }
+    const isEvm = !fromToken.chainData?.kind || fromToken.chainData.kind.toLowerCase() === 'evm';
+
+    if (!address && isEvm) { setError('Wallet not connected'); return; }
     setStarted(true);
     setError(null);
 
@@ -272,7 +283,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
 
       // ── Step 6: Broadcast on-chain tx (if required) ──────────────────────
       const meta = exchange.metadata;
-      if (meta?.to) {
+      if (meta?.to && isEvm) {
         updateStep('broadcast', 'active', 'Confirm transaction in wallet...');
         if (fromChainId) await switchToChain(fromChainId);
 
@@ -282,7 +293,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         // Estimate gas with 120% buffer
         const [estimatedGas, feeData] = await Promise.all([
           publicClient.estimateGas({
-            account: address,
+            account: address as `0x${string}`,
             to: meta.to as `0x${string}`,
             data: meta.data as `0x${string}`,
             value: txValue,
@@ -321,6 +332,10 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         }
 
         updateStep('broadcast', 'done', `Tx: ${hash.slice(0, 10)}…`);
+      } else if (meta?.to && !isEvm) {
+        // Non-EVM: surface tx data for the user to send manually
+        setPendingTxData({ to: meta.to, data: meta.data ?? '', value: meta.value ?? '0' });
+        updateStep('broadcast', 'done', 'Tx data ready — send manually');
       } else {
         updateStep('broadcast', 'skipped');
       }
@@ -408,6 +423,30 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
           </div>
         )}
 
+        {/* Pending tx data for non-EVM chains */}
+        {done && pendingTxData && (
+          <div className="mx-5 mb-3 space-y-2">
+            <p className="text-xs font-semibold text-gray-700">Transaction data (send manually)</p>
+            {(['to', 'data', 'value'] as const).map(field => (
+              <div key={field}>
+                <p className="text-[10px] font-medium text-gray-400 uppercase mb-0.5">{field}</p>
+                <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5">
+                  <p className="text-xs font-mono text-gray-700 break-all flex-1">{pendingTxData[field] || '0x'}</p>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(pendingTxData[field])}
+                    className="shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
+                    title={`Copy ${field}`}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Footer */}
         <div className="px-5 pb-5 flex gap-2">
           <button
@@ -429,7 +468,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
             <button
               onClick={() => {
                 setError(null); setStarted(false); setDone(false);
-                setSteps(INITIAL_STEPS); setHoudiniId(null); setSwapStatus(null);
+                setSteps(INITIAL_STEPS); setHoudiniId(null); setSwapStatus(null); setPendingTxData(null);
               }}
               className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
             >

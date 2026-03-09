@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useAccount } from 'wagmi';
+import { useAppKitAccount } from '@reown/appkit/react';
 import { TokenSelector, type Token } from './TokenSelector';
 import { QuoteList } from './QuoteList';
 import { DexSwapModal } from './DexSwapModal';
@@ -16,10 +16,29 @@ function formatAmount(amount: number): string {
   return amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+function getNamespace(token?: Token): 'eip155' | 'solana' | 'bip122' {
+  const kind = token?.chainData?.kind?.toLowerCase() ?? '';
+  if (kind === 'sol') return 'solana';
+  if (kind === 'bitcoin' || kind === 'bip122') return 'bip122';
+  return 'eip155';
+}
+
 export function SwapForm() {
-  const { isConnected, address } = useAccount();
+  const eip155Account = useAppKitAccount({ namespace: 'eip155' });
+  const solanaAccount = useAppKitAccount({ namespace: 'solana' });
+  const bip122Account = useAppKitAccount({ namespace: 'bip122' });
+
   const [fromToken, setFromToken] = useState<Token>();
   const [toToken, setToToken] = useState<Token>();
+
+  const activeAccount = (() => {
+    const ns = getNamespace(fromToken);
+    if (ns === 'solana') return solanaAccount;
+    if (ns === 'bip122') return bip122Account;
+    return eip155Account;
+  })();
+  const isConnected = activeAccount.isConnected;
+  const address = activeAccount.address;
   const [fromAmount, setFromAmount] = useState('');
   const [addressTo, setAddressTo] = useState('');
 
@@ -114,7 +133,6 @@ export function SwapForm() {
   const hasAddressTo = addressTo.trim().length > 0;
   const canSwap = !!hasAmount && !!selectedQuote && !quoteLoading && hasAddressTo &&
     (!isDex || isConnected);
-
   let swapButtonLabel = 'Enter an amount';
   if (hasAmount) {
     if (quoteLoading) swapButtonLabel = 'Fetching quotes...';
