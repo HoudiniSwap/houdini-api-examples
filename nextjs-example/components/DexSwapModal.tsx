@@ -191,72 +191,78 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
     const fromChainId = fromToken.chainData?.chainId;
 
     try {
-      // ── Step 1: Check requirements ──────────────────────────────────────
-      updateStep('check', 'active');
-      const approveRes = await fetch('/api/dex/approve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          quoteId: quote.quoteId,
-          addressFrom: address,
-        }),
-      });
-      if (!approveRes.ok) {
-        const err = await approveRes.json();
-        throw new Error(err.error ?? `Approve check failed (${approveRes.status})`);
-      }
-      const approveData = await approveRes.json();
-      const approvals: any[] = approveData.approvals ?? [];
-      const signatures: Signature[] = approveData.signatures ?? [];
-      updateStep('check', 'done', `${approvals.length} approval(s), ${signatures.length} signature(s)`);
+      let collectedSignatures: SignatureObject[] = [];
 
-      // ── Step 2: Token approvals ─────────────────────────────────────────
-      if (approvals.length > 0) {
-        updateStep('approve', 'active', `Sending ${approvals.length} approval(s)...`);
-        if (fromChainId) {
-          updateStep('approve', 'active', 'Switching network...');
-          await switchToChain(fromChainId);
+      if (quote.requiresApproval) {
+        // ── Step 1: Check requirements ────────────────────────────────────
+        updateStep('check', 'active');
+        const approveRes = await fetch('/api/dex/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quoteId: quote.quoteId, addressFrom: address }),
+        });
+        if (!approveRes.ok) {
+          const err = await approveRes.json();
+          throw new Error(err.error ?? `Approve check failed (${approveRes.status})`);
         }
-        for (let i = 0; i < approvals.length; i++) {
-          const approval = approvals[i];
-          updateStep('approve', 'active', `Approval ${i + 1}/${approvals.length} — confirm in wallet`);
-          const hash = await sendTransactionAsync({
-            to: approval.to as `0x${string}`,
-            data: approval.data as `0x${string}`,
-            value: BigInt(approval.value ?? 0),
-          });
-          updateStep('approve', 'active', `Waiting for confirmation ${i + 1}/${approvals.length}...`);
-          await getViemPublicClient(fromChainId!).waitForTransactionReceipt({ hash });
-        }
-        updateStep('approve', 'done');
+        const approveData = await approveRes.json();
+        const approvals: any[] = approveData.approvals ?? [];
+        const signatures: Signature[] = approveData.signatures ?? [];
+        updateStep('check', 'done', `${approvals.length} approval(s), ${signatures.length} signature(s)`);
 
-        // ── Step 3: Poll allowance ────────────────────────────────────────
-        updateStep('allowance', 'active', 'Polling on-chain allowance...');
-        let hasAllowance = false;
-        for (let attempt = 0; attempt < 60 && !hasAllowance; attempt++) {
-          await new Promise(r => setTimeout(r, 5000));
-          updateStep('allowance', 'active', `Checking allowance (attempt ${attempt + 1}/60)...`);
-          const res = await fetch('/api/dex/allowance', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ quoteId: quote.quoteId, addressFrom: address }),
-          });
-          if (res.ok) hasAllowance = await res.json();
+        // ── Step 2: Token approvals ───────────────────────────────────────
+        if (approvals.length > 0) {
+          updateStep('approve', 'active', `Sending ${approvals.length} approval(s)...`);
+          if (fromChainId) {
+            updateStep('approve', 'active', 'Switching network...');
+            await switchToChain(fromChainId);
+          }
+          for (let i = 0; i < approvals.length; i++) {
+            const approval = approvals[i];
+            updateStep('approve', 'active', `Approval ${i + 1}/${approvals.length} — confirm in wallet`);
+            const hash = await sendTransactionAsync({
+              to: approval.to as `0x${string}`,
+              data: approval.data as `0x${string}`,
+              value: BigInt(approval.value ?? 0),
+            });
+            updateStep('approve', 'active', `Waiting for confirmation ${i + 1}/${approvals.length}...`);
+            await getViemPublicClient(fromChainId!).waitForTransactionReceipt({ hash });
+          }
+          updateStep('approve', 'done');
+
+          // ── Step 3: Poll allowance ──────────────────────────────────────
+          updateStep('allowance', 'active', 'Polling on-chain allowance...');
+          let hasAllowance = false;
+          for (let attempt = 0; attempt < 60 && !hasAllowance; attempt++) {
+            await new Promise(r => setTimeout(r, 5000));
+            updateStep('allowance', 'active', `Checking allowance (attempt ${attempt + 1}/60)...`);
+            const res = await fetch('/api/dex/allowance', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ quoteId: quote.quoteId, addressFrom: address }),
+            });
+            if (res.ok) hasAllowance = await res.json();
+          }
+          if (!hasAllowance) throw new Error('Allowance not confirmed after 5 minutes. Please try again.');
+          updateStep('allowance', 'done');
+        } else {
+          updateStep('approve', 'skipped');
+          updateStep('allowance', 'skipped');
         }
-        if (!hasAllowance) throw new Error('Allowance not confirmed after 5 minutes. Please try again.');
-        updateStep('allowance', 'done');
+
+        // ── Step 4: Signatures ──────────────────────────────────────────
+        if (signatures.length > 0) {
+          updateStep('sign', 'active', `${signatures.length} signature(s) — confirm in wallet`);
+          collectedSignatures = await processSignatures(signatures, address);
+          updateStep('sign', 'done', `${collectedSignatures.length} signature(s) collected`);
+        } else {
+          updateStep('sign', 'skipped');
+        }
       } else {
+        // No approval needed — skip steps 1–4
+        updateStep('check', 'skipped');
         updateStep('approve', 'skipped');
         updateStep('allowance', 'skipped');
-      }
-
-      // ── Step 4: Signatures ───────────────────────────────────────────────
-      let collectedSignatures: SignatureObject[] = [];
-      if (signatures.length > 0) {
-        updateStep('sign', 'active', `${signatures.length} signature(s) — confirm in wallet`);
-        collectedSignatures = await processSignatures(signatures, address);
-        updateStep('sign', 'done', `${collectedSignatures.length} signature(s) collected`);
-      } else {
         updateStep('sign', 'skipped');
       }
 
@@ -283,7 +289,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
 
       // ── Step 6: Broadcast on-chain tx (if required) ──────────────────────
       const meta = exchange.metadata;
-      if (meta?.to && isEvm) {
+      if (meta && isEvm) {
         updateStep('broadcast', 'active', 'Confirm transaction in wallet...');
         if (fromChainId) await switchToChain(fromChainId);
 
@@ -332,7 +338,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         }
 
         updateStep('broadcast', 'done', `Tx: ${hash.slice(0, 10)}…`);
-      } else if (meta?.to && !isEvm) {
+      } else if (!isEvm) {
         // Non-EVM: surface tx data for the user to send manually
         setPendingTxData({ to: meta.to, data: meta.data ?? '', value: meta.value ?? '0' });
         updateStep('broadcast', 'done', 'Tx data ready — send manually');
