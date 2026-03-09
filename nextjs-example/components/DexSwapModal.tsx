@@ -431,7 +431,11 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
               <div key={field}>
                 <p className="text-[10px] font-medium text-gray-400 uppercase mb-0.5">{field}</p>
                 <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5">
-                  <p className="text-xs font-mono text-gray-700 break-all flex-1">{pendingTxData[field] || '0x'}</p>
+                  <p className="text xs font-mono text-gray-700 truncate flex-1">
+                    {field === 'data' && pendingTxData[field].length > 20
+                      ? `${pendingTxData[field].slice(0, 10)}…${pendingTxData[field].slice(-8)}`
+                      : pendingTxData[field] || '0x'}
+                  </p>
                   <button
                     onClick={() => navigator.clipboard.writeText(pendingTxData[field])}
                     className="shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
