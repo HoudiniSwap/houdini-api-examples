@@ -93,7 +93,7 @@ async function executeStandardSwap(): Promise<void> {
 
     const quote = quotes.find(q => q.type === 'standard' && !q.error);
     if (!quote) throw new Error('No standard quote available for this pair.');
-
+    
     console.log('Quote received:');
     console.log(`   Provider:   ${quote.swapName ?? quote.swap}`);
     console.log(`   Amount In:  ${quote.amountIn}`);

@@ -247,7 +247,7 @@ async function executeDexSwap(): Promise<void> {
     // Pick best quote (highest amountOut)
     const quote = dexQuotes.sort((a, b) => b.amountOut - a.amountOut)[0];
 
-    console.log('DEX quote selected:');
+    console.log('DEX quote selected:', quote);
     console.log(`   Provider:    ${quote.swapName ?? quote.swap}`);
     console.log(`   Amount In:   ${quote.amountIn}`);
     console.log(`   Amount Out:  ${quote.amountOut}`);
@@ -459,7 +459,6 @@ function validateConfig(): void {
   const errors: string[] = [];
   if (!process.env.HOUDINI_API_KEY)    errors.push('HOUDINI_API_KEY not set in .env');
   if (!process.env.HOUDINI_API_SECRET) errors.push('HOUDINI_API_SECRET not set in .env');
-  if (!process.env.WALLET_PRIVATE_KEY) errors.push('WALLET_PRIVATE_KEY not set in .env');
   if (!CONFIG.SWAP.addressFrom)        errors.push('EVM_WALLET_ADDRESS not set in .env (used as addressFrom/addressTo)');
   if (!CONFIG.SWAP.amount || parseFloat(CONFIG.SWAP.amount) <= 0) errors.push('Invalid swap amount');
   if (errors.length > 0) {
