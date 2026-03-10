@@ -3,7 +3,7 @@ import { fetchFromHoudini } from '@/lib/helpers';
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const data = await fetchFromHoudini('/v2/status', { params: { houdiniId: params.id } });
+    const data = await fetchFromHoudini(`/v2/orders/${params.id}`);
     return NextResponse.json(data);
   } catch (e) {
     return NextResponse.json(
