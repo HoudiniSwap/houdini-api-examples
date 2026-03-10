@@ -1,11 +1,11 @@
 /**
- * Houdini Private Swap - Complete Example (TypeScript)
+ * Houdini Private Swap - Complete Example (TypeScript, API v2)
  *
- * This script demonstrates a complete private swap flow:
- * 1. Get a quote for ETH → USDC with maximum privacy
- * 2. Create a private swap order (multi-hop routing)
+ * This script demonstrates a complete private swap flow using the v2 API:
+ * 1. Get quotes (select the one with type: "private")
+ * 2. Create a private swap order via /v2/exchanges
  * 3. Display deposit instructions
- * 4. Monitor the swap status through both hops
+ * 4. Monitor the swap status via /v2/orders/{houdiniId}
  *
  * Requirements:
  * - Node.js 18+ (for native fetch support)
@@ -20,340 +20,255 @@
  */
 
 import dotenv from 'dotenv';
-import type {
-  FetchOptions,
-  QuoteResponse,
-  SwapOrder,
-  SwapStatus,
-} from '../src/types';
-import { 
-  getStatusName, 
-  sleep, 
-  fetchFromHoudini, 
-  formatTime 
-} from '../src/helpers';
+import type { FetchOptions } from '../src/types';
+import { sleep, fetchFromHoudini, formatTime } from '../src/helpers';
 
 dotenv.config();
 
-interface PrivateSwapConfig {
-  API_BASE_URL: string;
-  API_KEY: string;
-  API_SECRET: string;
+// ============================================================================
+// CONFIG
+// ============================================================================
+
+const CONFIG = {
   SWAP: {
-    amount: string;
-    from: string;
-    to: string;
-    addressTo: string;
-    receiverTag: string;
-    anonymous: boolean;
-  };
-  USER: {
-    ip: string;
-    userAgent: string;
-    timezone: string;
-  };
-  STATUS_POLL_INTERVAL: number;
-  MAX_POLL_ATTEMPTS: number;
-}
-
-const CONFIG: PrivateSwapConfig = {
-  API_BASE_URL: 'https://api-partner.houdiniswap.com',
-  API_KEY: process.env.HOUDINI_API_KEY || '',
-  API_SECRET: process.env.HOUDINI_API_SECRET || '',
-
-  // Swap parameters
-  SWAP: {
-    amount: '1',                    // Amount to swap (1 ETH)
-    from: 'ETH',                      // Source token symbol
-    to: 'USDC',                       // Destination token symbol
-    addressTo: '0xb7dE6b6eEBF7401aFea5a49D6405C9048fEf2d40', // Destination address
-    receiverTag: '',                  // Memo/tag if required (empty for most tokens)
-    anonymous: true,                  // Private swap (multi-hop routing)
+    amount: '1',
+    // Use token IDs from GET /v2/tokens — not symbols.
+    // Example IDs below are for ETH and SOL; replace with your desired pair.
+    fromTokenId: '6689b73ec90e45f3b3e51566',  // ETH
+    toTokenId:   '6689b73ec90e45f3b3e51577',  // SOL
+    addressTo: '7A2Hz1fVDf7hPEah4Rtnqos2G22RUbSEtmpUFFWTfFQb',
   },
-
-  // User context (required headers)
-  USER: {
-    ip: '192.168.1.1',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    timezone: 'America/New_York'
-  },
-
-  // Polling configuration
-  STATUS_POLL_INTERVAL: 30000,        // Check status every 30 seconds (private swaps are slower)
-  MAX_POLL_ATTEMPTS: 240,             // Max 120 minutes of polling (240 * 30s)
+  STATUS_POLL_INTERVAL: 30_000,   // 30 seconds (private swaps are slower)
+  MAX_POLL_ATTEMPTS: 240,         // up to 120 minutes
 };
 
-/**
- * Format inStatus/outStatus for private swaps
- */
-function getHopStatus(statusCode: number): string {
-  const hopStatuses: Record<number, string> = {
-    1: 'Waiting for deposit',
-    2: 'Deposit detected',
-    3: 'Swapping',
-    4: 'Sending to next hop',
-    5: 'Completed',
-  };
-  return hopStatuses[statusCode] || `Status ${statusCode}`;
+// ============================================================================
+// V2 TYPES (inline — not yet in src/types.ts)
+// ============================================================================
+
+interface V2Quote {
+  quoteId: string;
+  type: 'standard' | 'private' | 'dex';
+  swap: string;
+  swapName?: string;
+  amountIn: number;
+  amountOut: number;
+  amountOutUsd?: number;
+  duration: number;
+  min?: number;
+  max?: number;
+  error?: string;
 }
 
-function displayMultiHopStatus(status: SwapStatus): void {
+interface V2QuotesResponse {
+  quotes: V2Quote[];
+  total: number;
+}
+
+interface V2Order {
+  houdiniId: string;
+  created: string;
+  expires: string;
+  depositAddress: string;
+  depositTag?: string;
+  receiverAddress: string;
+  anonymous: boolean;
+  status: number;
+  statusLabel: string;
+  inAmount: number;
+  inSymbol: string;
+  inStatus: number;
+  inStatusLabel: string;
+  outAmount: number;
+  outSymbol: string;
+  outStatus: number;
+  outStatusLabel: string;
+  eta: number;
+  swapName?: string;
+  transactionHash?: string;
+  hashUrl?: string;
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+function displayMultiHopStatus(order: V2Order): void {
   const timestamp = new Date().toLocaleTimeString();
-  console.log(`[${timestamp}] Overall: ${getStatusName(status.status)} (${status.status})`);
-
-  // Show hop-specific status for private swaps
-  if (status.inStatus !== undefined) {
-    console.log(`              First Hop (Input):  ${getHopStatus(status.inStatus)} (${status.inStatus})`);
-  }
-  if (status.outStatus !== undefined) {
-    console.log(`              Second Hop (Output): ${getHopStatus(status.outStatus)} (${status.outStatus})`);
-  }
+  console.log(`[${timestamp}] Overall:    ${order.statusLabel} (${order.status})`);
+  console.log(`              First Hop:  ${order.inStatusLabel} (${order.inStatus})`);
+  console.log(`              Second Hop: ${order.outStatusLabel} (${order.outStatus})`);
 }
+
+// ============================================================================
+// MAIN FLOW
+// ============================================================================
 
 async function executePrivateSwap(): Promise<void> {
-  console.log('🔒 Private Swap Mode: Multi-hop routing for maximum privacy');
-  console.log('⏱️  Expected completion: 15-45 minutes\n');
+  console.log('Private Swap Mode: Multi-hop routing for maximum privacy');
+  console.log('Expected completion: 15-45 minutes\n');
 
   try {
     // ========================================================================
-    // STEP 1: Get Quote with Privacy
+    // STEP 1: Get Quotes — select private quote
     // ========================================================================
-    console.log('📊 STEP 1: Requesting private quote...');
-    console.log(`   Swapping: ${CONFIG.SWAP.amount} ${CONFIG.SWAP.from} → ${CONFIG.SWAP.to}\n`);
+    console.log('STEP 1: Requesting quotes...');
+    console.log(`   Swapping: ${CONFIG.SWAP.amount} (from token ${CONFIG.SWAP.fromTokenId}) -> (to token ${CONFIG.SWAP.toTokenId})\n`);
 
-    const quote = await fetchFromHoudini<QuoteResponse>('/quote', {
+    const { quotes } = await fetchFromHoudini<V2QuotesResponse>('/v2/quotes', {
       params: {
         amount: CONFIG.SWAP.amount,
-        from: CONFIG.SWAP.from,
-        to: CONFIG.SWAP.to,
-        anonymous: true,  // Enable private routing
-      }
+        from: CONFIG.SWAP.fromTokenId,
+        to: CONFIG.SWAP.toTokenId,
+      },
     });
 
-    console.log('✅ Private quote received:');
-    console.log(`   Amount In:  ${quote.amountIn} ${CONFIG.SWAP.from}`);
-    console.log(`   Amount Out: ${quote.amountOut} ${CONFIG.SWAP.to}`);
-    console.log(`   USD Value:  $${quote.amountOutUsd.toFixed(2)}`);
-    console.log(`   Type:       ${quote.type} (multi-hop for privacy)`);
-    console.log(`   ETA:        ${quote.duration} minutes`);
-    console.log(`   Quote ID:   ${quote.quoteId}\n`);
-
-    if (quote.type !== 'private') {
-      console.warn('⚠️  Warning: Quote type is not "private". Route may not provide full privacy.\n');
+    const privateQuote = quotes.find(q => q.type === 'private' && !q.error);
+    if (!privateQuote) {
+      throw new Error('No private quote available for this pair. Try a different token pair or amount.');
     }
+    console.log('Private quote received:');
+    console.log(`   Amount In:  ${privateQuote.amountIn}`);
+    console.log(`   Amount Out: ${privateQuote.amountOut}`);
+    if (privateQuote.amountOutUsd != null) {
+      console.log(`   USD Value:  $${privateQuote.amountOutUsd.toFixed(2)}`);
+    }
+    console.log(`   ETA:        ${privateQuote.duration} minutes`);
+    console.log(`   Quote ID:   ${privateQuote.quoteId}\n`);
 
     // ========================================================================
     // STEP 2: Create Private Swap Order
     // ========================================================================
-    console.log('🔄 STEP 2: Creating private swap order...\n');
+    console.log('STEP 2: Creating private swap order...\n');
 
-    const swapRequest = {
-      amount: parseFloat(CONFIG.SWAP.amount),
-      from: CONFIG.SWAP.from,
-      to: CONFIG.SWAP.to,
-      addressTo: CONFIG.SWAP.addressTo,
-      receiverTag: CONFIG.SWAP.receiverTag,
-      anonymous: true,  // Enable private swap
-      ip: CONFIG.USER.ip,
-      userAgent: CONFIG.USER.userAgent,
-      timezone: CONFIG.USER.timezone,
-    };
-
-    const swap = await fetchFromHoudini<SwapOrder>('/exchange', {
+    const order = await fetchFromHoudini<V2Order>('/v2/exchanges', {
       method: 'POST',
-      body: swapRequest,
+      body: {
+        quoteId: privateQuote.quoteId,
+        addressTo: CONFIG.SWAP.addressTo,
+      },
     });
 
-    console.log('✅ Private swap order created:');
-    console.log(`   Houdini ID:     ${swap.houdiniId}`);
-    console.log(`   Status:         ${getStatusName(swap.status)} (${swap.status})`);
-    console.log(`   Created:        ${formatTime(swap.created)}`);
-    console.log(`   Expires:        ${formatTime(swap.expires)}`);
-    console.log(`   Routing:        Multi-hop (${swap.type})\n`);
+    console.log('Private swap order created:');
+    console.log(`   Houdini ID:  ${order.houdiniId}`);
+    console.log(`   Status:      ${order.statusLabel} (${order.status})`);
+    console.log(`   Routing:     ${order.swapName ?? 'Multi-hop'}`);
+    console.log(`   Created:     ${formatTime(order.created)}`);
+    console.log(`   Expires:     ${formatTime(order.expires)}\n`);
 
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('                    💰 DEPOSIT INSTRUCTIONS                     ');
+    console.log('                    DEPOSIT INSTRUCTIONS                        ');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-    console.log(`   Send EXACTLY: ${swap.inAmount} ${swap.inSymbol}`);
-    console.log(`   To Address:   ${swap.senderAddress}\n`);
-
-    if (swap.senderTag) {
-      console.log(`   ⚠️  MEMO/TAG REQUIRED: ${swap.senderTag}\n`);
+    console.log(`   Send EXACTLY: ${order.inAmount} ${order.inSymbol}`);
+    console.log(`   To Address:   ${order.depositAddress}`);
+    if (order.depositTag) {
+      console.log(`   MEMO/TAG:     ${order.depositTag}  <-- REQUIRED`);
     }
-
-    console.log('   ⚠️  CRITICAL REQUIREMENTS:');
-    console.log(`   • Send exact amount: ${swap.inAmount} ${swap.inSymbol}`);
-    console.log(`   • Before expiration: ${formatTime(swap.expires)}`);
-    console.log('   • Send from a wallet you control (for potential refunds)');
-    console.log('   • Wrong amount or late deposit will cause issues\n');
-
-    console.log(`   You will receive: ~${swap.outAmount} ${swap.outSymbol}`);
-    console.log(`   At address:       ${swap.receiverAddress}\n`);
-
+    console.log(`\n   You will receive: ~${order.outAmount} ${order.outSymbol}`);
+    console.log(`   At address:       ${order.receiverAddress}`);
+    console.log(`   Before:           ${formatTime(order.expires)}\n`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
     // ========================================================================
-    // STEP 3: Monitor Multi-Hop Swap Status
+    // STEP 3: Poll Order Status via /v2/orders/{houdiniId}
     // ========================================================================
-    console.log('👀 STEP 3: Monitoring private swap status...');
-    console.log('   (Polling every 15 seconds - private swaps take longer)\n');
+    console.log('STEP 3: Monitoring private swap status...');
+    console.log('   (Polling every 30 seconds — private swaps take 15-45 minutes)\n');
 
     let attempts = 0;
-    let currentStatus = swap.status;
-    let lastStatus: number | null = null;
-    let lastInStatus: number | undefined = undefined;
-    let lastOutStatus: number | undefined = undefined;
+    let lastStatusLabel = '';
+    let lastInStatusLabel = '';
+    let lastOutStatusLabel = '';
     let depositDetected = false;
-    let anonymizingStarted = false;
+    let anonymizingLogged = false;
 
     while (attempts < CONFIG.MAX_POLL_ATTEMPTS) {
       attempts++;
 
-      // Fetch current status
-      const status = await fetchFromHoudini<SwapStatus>('/status', {
-        params: { id: swap.houdiniId }
-      });
+      const current = await fetchFromHoudini<V2Order>(`/v2/orders/${order.houdiniId}`);
 
-      currentStatus = status.status;
-
-      // Check if any status changed
-      const statusChanged = currentStatus !== lastStatus ||
-                           status.inStatus !== lastInStatus ||
-                           status.outStatus !== lastOutStatus;
+      const statusChanged =
+        current.statusLabel !== lastStatusLabel ||
+        current.inStatusLabel !== lastInStatusLabel ||
+        current.outStatusLabel !== lastOutStatusLabel;
 
       if (statusChanged) {
-        displayMultiHopStatus(status);
+        displayMultiHopStatus(current);
 
-        // Show milestone messages
-        if (status.inStatus && status.inStatus >= 2 && !depositDetected) {
-          console.log('   ✅ Deposit detected on blockchain!\n');
+        if (current.inStatus >= 2 && !depositDetected) {
+          console.log('   Deposit detected on blockchain!\n');
           depositDetected = true;
         }
-
-        if (currentStatus === 3 && !anonymizingStarted) {
-          console.log('   🔀 Anonymizing: Routing through privacy layer...\n');
-          anonymizingStarted = true;
+        if (current.status === 3 && !anonymizingLogged) {
+          console.log('   Anonymizing: Routing through XMR privacy layer...\n');
+          anonymizingLogged = true;
         }
 
-        lastStatus = currentStatus;
-        lastInStatus = status.inStatus;
-        lastOutStatus = status.outStatus;
+        lastStatusLabel = current.statusLabel;
+        lastInStatusLabel = current.inStatusLabel;
+        lastOutStatusLabel = current.outStatusLabel;
       }
 
-      // Check for terminal states
-      if (currentStatus === 4) {
-        // COMPLETED
-        console.log('\n✅ SUCCESS! Private swap completed successfully!');
-        console.log(`   Final amount: ${status.outAmount} ${status.outSymbol}`);
-        console.log(`   Destination:  ${status.receiverAddress}`);
-        if (status.txHash) {
-          console.log(`   TX Hash:      ${status.txHash}`);
+      // Terminal states
+      if (current.status === 4) {
+        console.log('\nSUCCESS! Private swap completed.');
+        console.log(`   Received: ${current.outAmount} ${current.outSymbol}`);
+        console.log(`   To:       ${current.receiverAddress}`);
+        if (current.transactionHash) {
+          console.log(`   Tx Hash:  ${current.transactionHash}`);
+          if (current.hashUrl) console.log(`   Explorer: ${current.hashUrl}`);
         }
-        console.log('\n🔒 Privacy achieved through multi-hop routing!');
+        console.log('\nPrivacy achieved through multi-hop routing.');
         break;
-      } else if (currentStatus === 5) {
-        // EXPIRED
-        console.log('\n❌ Order expired before deposit was received.');
-        console.log('   Please create a new order if you still want to swap.');
+      } else if (current.status === 5) {
+        console.log('\nOrder expired — deposit not received in time.');
+        console.log('   Create a new order if you still want to swap.');
         break;
-      } else if (currentStatus === 6) {
-        // FAILED
-        console.log('\n❌ Swap failed!');
-        if (status.message) {
-          console.log(`   Error: ${status.message}`);
-        }
-        console.log('   Please contact support with your Houdini ID for assistance.');
+      } else if (current.status === 6) {
+        console.log('\nSwap failed.');
+        console.log(`   Contact support with Houdini ID: ${order.houdiniId}`);
         break;
-      } else if (currentStatus === 7) {
-        // REFUNDED
-        console.log('\n💰 Swap was refunded.');
-        if (status.message) {
-          console.log(`   Reason: ${status.message}`);
-        }
-        console.log('   Funds should be returned to your original address.');
+      } else if (current.status === 7) {
+        console.log('\nSwap was refunded.');
+        console.log('   Funds will be returned to your original address.');
         break;
-      } else if (currentStatus === 8) {
-        // DELETED
-        console.log('\n⚠️  Order was deleted from the system.');
-        console.log('   This is normal cleanup for old orders.');
+      } else if (current.status === 8) {
+        console.log('\nOrder was deleted from the system.');
         break;
       }
 
-      // Wait before next poll (only if not terminal state)
-      if (currentStatus < 4) {
-        await sleep(CONFIG.STATUS_POLL_INTERVAL);
-      }
+      await sleep(CONFIG.STATUS_POLL_INTERVAL);
     }
 
-    if (attempts >= CONFIG.MAX_POLL_ATTEMPTS && currentStatus < 4) {
-      console.log('\n⏱️  Polling timeout reached.');
-      console.log('   The swap is still in progress. Private swaps can take up to 45 minutes.');
-      console.log('   You can continue monitoring using:');
-      console.log(`   Houdini ID: ${swap.houdiniId}`);
-      console.log('\n   Check status via API:');
-      console.log(`   GET ${CONFIG.API_BASE_URL}/status?id=${swap.houdiniId}`);
+    if (attempts >= CONFIG.MAX_POLL_ATTEMPTS) {
+      console.log('\nPolling timeout reached. The swap may still be in progress.');
+      console.log(`   Houdini ID: ${order.houdiniId}`);
+      console.log(`   Check manually: GET /v2/orders/${order.houdiniId}`);
     }
 
   } catch (error) {
-    console.error('\n❌ ERROR:', error instanceof Error ? error.message : String(error));
-
-    if (error instanceof Error && error.message.includes('API Error')) {
-      console.error('\nPossible causes:');
-      console.error('• Invalid API credentials');
-      console.error('• Invalid token symbols');
-      console.error('• Amount too small or too large');
-      console.error('• Pair not available for private routing');
-      console.error('• Network connectivity issues');
-      console.error('• API service unavailable');
-    }
-
+    console.error('\nERROR:', error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 
-  console.log('\n╔════════════════════════════════════════════════════════════════╗');
-  console.log('║                    Script Completed                            ║');
-  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+  console.log('\nScript completed.\n');
 }
 
 // ============================================================================
-// VALIDATION
+// VALIDATION + ENTRY POINT
 // ============================================================================
 
 function validateConfig(): void {
   const errors: string[] = [];
-
-  if (!CONFIG.API_KEY) {
-    errors.push('HOUDINI_API_KEY not set in .env file');
-  }
-
-  if (!CONFIG.API_SECRET) {
-    errors.push('HOUDINI_API_SECRET not set in .env file');
-  }
-
-  if (!CONFIG.SWAP.amount || parseFloat(CONFIG.SWAP.amount) <= 0) {
-    errors.push('Invalid swap amount');
-  }
-
-  if (!CONFIG.SWAP.addressTo || CONFIG.SWAP.addressTo.length < 20) {
-    errors.push('Invalid destination address');
-  }
-
+  if (!process.env.HOUDINI_API_KEY)    errors.push('HOUDINI_API_KEY not set in .env');
+  if (!process.env.HOUDINI_API_SECRET) errors.push('HOUDINI_API_SECRET not set in .env');
+  if (!CONFIG.SWAP.amount || parseFloat(CONFIG.SWAP.amount) <= 0) errors.push('Invalid swap amount');
+  if (!CONFIG.SWAP.addressTo) errors.push('addressTo is required');
   if (errors.length > 0) {
-    console.error('❌ Configuration errors:\n');
-    errors.forEach(err => console.error(`   • ${err}`));
-    console.error('\nPlease create a .env file with your API credentials.');
-    console.error('See .env.example for the required format.\n');
+    errors.forEach(e => console.error(`  - ${e}`));
     process.exit(1);
   }
 }
 
-// ============================================================================
-// ENTRY POINT
-// ============================================================================
-
-// Validate configuration before running
 validateConfig();
-
-// Execute the private swap flow
 executePrivateSwap();

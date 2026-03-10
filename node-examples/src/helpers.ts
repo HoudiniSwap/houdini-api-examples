@@ -52,7 +52,7 @@ export function sleep(ms: number): Promise<void> {
 }
 
 const CONFIG = {
-  API_BASE_URL: 'https://api-partner.houdiniswap.com',
+  API_BASE_URL: process.env.HOUDINI_API_BASE_URL,
   API_KEY: process.env.HOUDINI_API_KEY || '',
   API_SECRET: process.env.HOUDINI_API_SECRET || '',
 

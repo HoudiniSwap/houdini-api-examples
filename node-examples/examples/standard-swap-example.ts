@@ -1,290 +1,213 @@
 /**
- * Houdini Standard Swap - Complete Example (TypeScript)
+ * Houdini Standard Swap - Complete Example (TypeScript, API v2)
  *
- * This script demonstrates a complete standard swap flow:
- * 1. Get a quote for ETH → USDC
- * 2. Create a swap order
- * 3. Monitor the swap status
+ * Flow:
+ * 1. GET /v2/quotes — select quote with type: "standard"
+ * 2. POST /v2/exchanges — create order with quoteId + addressTo
+ * 3. Send deposit to depositAddress
+ * 4. GET /v2/orders/{houdiniId} — poll until FINISHED
  *
- * Requirements:
- * - Node.js 18+ (for native fetch support)
- * - Valid Houdini API credentials in .env file
- *
- * Usage:
- * 1. Copy .env.example to .env and set your API credentials
- * 2. Run: yarn run:standard
+ * Usage: yarn run:standard
  */
 
 import dotenv from 'dotenv';
-import type {
-  FetchOptions,
-  QuoteResponse,
-  SwapOrder,
-  SwapStatus,
-} from '../src/types';
-import { 
-  getStatusName, 
-  sleep, 
-  fetchFromHoudini, 
-  formatTime 
-} from '../src/helpers';
+import { sleep, fetchFromHoudini, formatTime } from '../src/helpers';
 
 dotenv.config();
 
 // ============================================================================
-// CONFIGURATION - UPDATE THESE VALUES
+// CONFIG
 // ============================================================================
 
-interface StandardSwapConfig {
-  API_BASE_URL: string;
-  API_KEY: string;
-  API_SECRET: string;
+const CONFIG = {
   SWAP: {
-    amount: string;
-    from: string;
-    to: string;
-    addressTo: string;
-    receiverTag: string;
-    anonymous: boolean;
-  };
-  USER: {
-    ip: string;
-    userAgent: string;
-    timezone: string;
-  };
-  STATUS_POLL_INTERVAL: number;
-  MAX_POLL_ATTEMPTS: number;
-}
-
-const CONFIG: StandardSwapConfig = {
-  API_BASE_URL: 'https://api-partner.houdiniswap.com',
-  API_KEY: process.env.HOUDINI_API_KEY || '',
-  API_SECRET: process.env.HOUDINI_API_SECRET || '',
-
-  // Swap parameters
-  SWAP: {
-    amount: '1',                   // Amount to swap (0.01 ETH)
-    from: 'ETH',                      // Source token symbol
-    to: 'USDC',                       // Destination token symbol
-    addressTo: '0xb7dE6b6eEBF7401aFea5a49D6405C9048fEf2d40', // Destination address
-    receiverTag: '',                  // Memo/tag if required (empty for most tokens)
-    anonymous: false,
+    amount: '1',
+    // Use token IDs from GET /v2/tokens — not symbols.
+    fromTokenId: '6689b73ec90e45f3b3e51566',  // ETH
+    toTokenId:   '6689b73ec90e45f3b3e51558',  // USDC
+    addressTo: '0xb7dE6b6eEBF7401aFea5a49D6405C9048fEf2d40',
   },
-
-  // User context (required headers)
-  USER: {
-    ip: '192.168.1.1',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    timezone: 'America/New_York'
-  },
-
-  // Polling configuration
-  STATUS_POLL_INTERVAL: 10000,        // Check status every 10 seconds
-  MAX_POLL_ATTEMPTS: 180,             // Max 30 minutes of polling (180 * 10s)
+  STATUS_POLL_INTERVAL: 30_000,  // 30 seconds
+  MAX_POLL_ATTEMPTS: 60,         // up to 30 minutes
 };
 
 // ============================================================================
-// MAIN SWAP FLOW
+// V2 TYPES
+// ============================================================================
+
+interface V2Quote {
+  quoteId: string;
+  type: 'standard' | 'private' | 'dex';
+  swap: string;
+  swapName?: string;
+  amountIn: number;
+  amountOut: number;
+  amountOutUsd?: number;
+  duration: number;
+  error?: string;
+}
+
+interface V2Order {
+  houdiniId: string;
+  created: string;
+  expires: string;
+  depositAddress: string;
+  depositTag?: string;
+  receiverAddress: string;
+  status: number;
+  statusLabel: string;
+  inAmount: number;
+  inSymbol: string;
+  inStatus: number;
+  inStatusLabel: string;
+  outAmount: number;
+  outSymbol: string;
+  outStatus: number;
+  outStatusLabel: string;
+  eta: number;
+  swapName?: string;
+  transactionHash?: string;
+  hashUrl?: string;
+}
+
+// ============================================================================
+// MAIN FLOW
 // ============================================================================
 
 async function executeStandardSwap(): Promise<void> {
-  console.log('╔════════════════════════════════════════════════════════════════╗');
-  console.log('║        Houdini Standard Swap - Complete Example               ║');
-  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+  console.log('Houdini Standard Swap (API v2)\n');
 
   try {
     // ========================================================================
-    // STEP 1: Get Quote
+    // STEP 1: Get Quotes — select standard quote
     // ========================================================================
-    console.log('📊 STEP 1: Requesting quote...');
-    console.log(`   Swapping: ${CONFIG.SWAP.amount} ${CONFIG.SWAP.from} → ${CONFIG.SWAP.to}\n`);
+    console.log('STEP 1: Requesting quotes...');
 
-    const quote = await fetchFromHoudini<QuoteResponse>('/quote', {
-      params: CONFIG.SWAP
+    const { quotes } = await fetchFromHoudini<{ quotes: V2Quote[] }>('/v2/quotes', {
+      params: {
+        amount: CONFIG.SWAP.amount,
+        from: CONFIG.SWAP.fromTokenId,
+        to: CONFIG.SWAP.toTokenId,
+      },
     });
 
-    console.log('✅ Quote received:');
-    console.log(`   Amount In:  ${quote.amountIn} ${CONFIG.SWAP.from}`);
-    console.log(`   Amount Out: ${quote.amountOut} ${CONFIG.SWAP.to}`);
-    console.log(`   USD Value:  $${quote.amountOutUsd.toFixed(2)}`);
-    console.log(`   Type:       ${quote.type}`);
+    const quote = quotes.find(q => q.type === 'standard' && !q.error);
+    if (!quote) throw new Error('No standard quote available for this pair.');
+
+    console.log('Quote received:');
+    console.log(`   Provider:   ${quote.swapName ?? quote.swap}`);
+    console.log(`   Amount In:  ${quote.amountIn}`);
+    console.log(`   Amount Out: ${quote.amountOut}`);
+    if (quote.amountOutUsd != null) console.log(`   USD Value:  $${quote.amountOutUsd.toFixed(2)}`);
     console.log(`   ETA:        ${quote.duration} minutes`);
     console.log(`   Quote ID:   ${quote.quoteId}\n`);
 
     // ========================================================================
-    // STEP 2: Create Swap Order
+    // STEP 2: Create Order
     // ========================================================================
-    console.log('🔄 STEP 2: Creating swap order...\n');
+    console.log('STEP 2: Creating swap order...');
 
-    const swapRequest = {
-      amount: parseFloat(CONFIG.SWAP.amount),
-      from: CONFIG.SWAP.from,
-      to: CONFIG.SWAP.to,
-      addressTo: CONFIG.SWAP.addressTo,
-      receiverTag: CONFIG.SWAP.receiverTag,
-      anonymous: false,  // Standard swap (not private)
-      ip: CONFIG.USER.ip,
-      userAgent: CONFIG.USER.userAgent,
-      timezone: CONFIG.USER.timezone,
-    };
-
-    const swap = await fetchFromHoudini<SwapOrder>('/exchange', {
+    const order = await fetchFromHoudini<V2Order>('/v2/exchanges', {
       method: 'POST',
-      body: swapRequest,
+      body: {
+        quoteId: quote.quoteId,
+        addressTo: CONFIG.SWAP.addressTo,
+      },
     });
 
-    console.log('✅ Swap order created:');
-    console.log(`   Houdini ID:     ${swap.houdiniId}`);
-    console.log(`   Status:         ${getStatusName(swap.status)} (${swap.status})`);
-    console.log(`   Created:        ${formatTime(swap.created)}`);
-    console.log(`   Expires:        ${formatTime(swap.expires)}\n`);
+    console.log('Order created:');
+    console.log(`   Houdini ID: ${order.houdiniId}`);
+    console.log(`   Status:     ${order.statusLabel}`);
+    console.log(`   Provider:   ${order.swapName ?? quote.swap}`);
+    console.log(`   Created:    ${formatTime(order.created)}`);
+    console.log(`   Expires:    ${formatTime(order.expires)}\n`);
 
-    console.log('💰 DEPOSIT INSTRUCTIONS:');
-    console.log(`   ┌─────────────────────────────────────────────────────────┐`);
-    console.log(`   │ Send EXACTLY ${swap.inAmount} ${swap.inSymbol} to:                    │`);
-    console.log(`   │ ${swap.senderAddress}         │`);
-    console.log(`   │                                                         │`);
-    console.log(`   │ ⚠️  IMPORTANT:                                          │`);
-    console.log(`   │ • Send exact amount: ${swap.inAmount} ${swap.inSymbol}                │`);
-    console.log(`   │ • Before expiration: ${formatTime(swap.expires)}       │`);
-    console.log(`   │ • Wrong amount or late deposit will cause issues       │`);
-    console.log(`   └─────────────────────────────────────────────────────────┘\n`);
-
-    console.log(`   You will receive: ${swap.outAmount} ${swap.outSymbol}`);
-    console.log(`   Destination:      ${swap.receiverAddress}\n`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('                    DEPOSIT INSTRUCTIONS                        ');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    console.log(`   Send EXACTLY: ${order.inAmount} ${order.inSymbol}`);
+    console.log(`   To Address:   ${order.depositAddress}`);
+    if (order.depositTag) console.log(`   MEMO/TAG:     ${order.depositTag}  <-- REQUIRED`);
+    console.log(`\n   You will receive: ~${order.outAmount} ${order.outSymbol}`);
+    console.log(`   At address:       ${order.receiverAddress}`);
+    console.log(`   Before:           ${formatTime(order.expires)}\n`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
     // ========================================================================
-    // STEP 3: Monitor Swap Status
+    // STEP 3: Poll Order Status
     // ========================================================================
-    console.log('👀 STEP 3: Monitoring swap status...');
-    console.log('   (Polling every 10 seconds until completion)\n');
+    console.log('STEP 3: Monitoring swap status...');
+    console.log('   (Polling every 30 seconds)\n');
 
     let attempts = 0;
-    let currentStatus = swap.status;
-    let lastStatus: number | null = null;
+    let lastStatusLabel = '';
 
     while (attempts < CONFIG.MAX_POLL_ATTEMPTS) {
       attempts++;
 
-      // Fetch current status
-      const status = await fetchFromHoudini<SwapStatus>('/status', {
-        params: { id: swap.houdiniId }
-      });
+      const current = await fetchFromHoudini<V2Order>(`/v2/orders/${order.houdiniId}`);
 
-      currentStatus = status.status;
-
-      // Only log if status changed
-      if (currentStatus !== lastStatus) {
-        const timestamp = new Date().toLocaleTimeString();
-        console.log(`[${timestamp}] Status: ${getStatusName(currentStatus)} (${currentStatus})`);
-
-        // Show detailed status for active swaps
-        if (status.inStatus !== undefined) {
-          console.log(`              Input leg: ${status.inStatus}`);
-        }
-        if (status.outStatus !== undefined) {
-          console.log(`              Output leg: ${status.outStatus}`);
-        }
-
-        lastStatus = currentStatus;
+      if (current.statusLabel !== lastStatusLabel) {
+        const ts = new Date().toLocaleTimeString();
+        console.log(`[${ts}] ${current.statusLabel}`);
+        lastStatusLabel = current.statusLabel;
       }
 
-      // Check for terminal states
-      if (currentStatus === 4) {
-        // COMPLETED
-        console.log('\n✅ SUCCESS! Swap completed successfully!');
-        console.log(`   Final amount: ${status.outAmount} ${status.outSymbol}`);
-        console.log(`   Destination:  ${status.receiverAddress}`);
-        if (status.txHash) {
-          console.log(`   TX Hash:      ${status.txHash}`);
+      if (current.status === 4) {
+        console.log('\nSUCCESS! Swap completed.');
+        console.log(`   Received: ${current.outAmount} ${current.outSymbol}`);
+        console.log(`   To:       ${current.receiverAddress}`);
+        if (current.transactionHash) {
+          console.log(`   Tx Hash:  ${current.transactionHash}`);
+          if (current.hashUrl) console.log(`   Explorer: ${current.hashUrl}`);
         }
         break;
-      } else if (currentStatus === 5) {
-        // EXPIRED
-        console.log('\n❌ Order expired before deposit was received.');
-        console.log('   Please create a new order if you still want to swap.');
+      } else if (current.status === 5) {
+        console.log('\nOrder expired — deposit not received in time.');
         break;
-      } else if (currentStatus === 6) {
-        // FAILED
-        console.log('\n❌ Swap failed!');
-        if (status.message) {
-          console.log(`   Error: ${status.message}`);
-        }
-        console.log('   Please contact support for assistance.');
+      } else if (current.status === 6) {
+        console.log('\nSwap failed.');
+        console.log(`   Contact support with Houdini ID: ${order.houdiniId}`);
         break;
-      } else if (currentStatus === 7) {
-        // REFUNDED
-        console.log('\n💰 Swap was refunded.');
-        if (status.message) {
-          console.log(`   Reason: ${status.message}`);
-        }
+      } else if (current.status === 7) {
+        console.log('\nSwap was refunded.');
         break;
-      } else if (currentStatus === 8) {
-        // DELETED
-        console.log('\n⚠️  Order was deleted from the system.');
+      } else if (current.status === 8) {
+        console.log('\nOrder deleted.');
         break;
       }
 
-      // Wait before next poll (only if not terminal state)
-      if (currentStatus < 4) {
-        await sleep(CONFIG.STATUS_POLL_INTERVAL);
-      }
+      await sleep(CONFIG.STATUS_POLL_INTERVAL);
     }
 
-    if (attempts >= CONFIG.MAX_POLL_ATTEMPTS && currentStatus < 4) {
-      console.log('\n⏱️  Polling timeout reached.');
-      console.log('   The swap is still in progress. You can continue monitoring using:');
-      console.log(`   Houdini ID: ${swap.houdiniId}`);
+    if (attempts >= CONFIG.MAX_POLL_ATTEMPTS) {
+      console.log('\nPolling timeout reached. Swap may still be in progress.');
+      console.log(`   Check manually: GET /v2/orders/${order.houdiniId}`);
     }
 
   } catch (error) {
-    console.error('\n❌ ERROR:', error instanceof Error ? error.message : String(error));
+    console.error('\nERROR:', error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 
-  console.log('\n╔════════════════════════════════════════════════════════════════╗');
-  console.log('║                    Script Completed                            ║');
-  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+  console.log('\nScript completed.\n');
 }
 
 // ============================================================================
-// VALIDATION
+// VALIDATION + ENTRY POINT
 // ============================================================================
 
 function validateConfig(): void {
   const errors: string[] = [];
-
-  if (!CONFIG.API_KEY) {
-    errors.push('HOUDINI_API_KEY not set in .env file');
-  }
-
-  if (!CONFIG.API_SECRET) {
-    errors.push('HOUDINI_API_SECRET not set in .env file');
-  }
-
-  if (!CONFIG.SWAP.amount || parseFloat(CONFIG.SWAP.amount) <= 0) {
-    errors.push('Invalid swap amount');
-  }
-
-  if (!CONFIG.SWAP.addressTo || CONFIG.SWAP.addressTo.length < 20) {
-    errors.push('Invalid destination address');
-  }
-
+  if (!process.env.HOUDINI_API_KEY)    errors.push('HOUDINI_API_KEY not set in .env');
+  if (!process.env.HOUDINI_API_SECRET) errors.push('HOUDINI_API_SECRET not set in .env');
+  if (!CONFIG.SWAP.amount || parseFloat(CONFIG.SWAP.amount) <= 0) errors.push('Invalid swap amount');
+  if (!CONFIG.SWAP.addressTo) errors.push('addressTo is required');
   if (errors.length > 0) {
-    console.error('❌ Configuration errors:\n');
-    errors.forEach(err => console.error(`   • ${err}`));
-    console.error('\nPlease create a .env file with your API credentials.');
-    console.error('See .env.example for the required format.\n');
+    errors.forEach(e => console.error(`  - ${e}`));
     process.exit(1);
   }
 }
 
-// ============================================================================
-// ENTRY POINT
-// ============================================================================
-
-// Validate configuration before running
 validateConfig();
-
-// Execute the swap flow
 executeStandardSwap();
