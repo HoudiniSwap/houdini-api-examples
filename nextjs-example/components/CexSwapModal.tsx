@@ -73,7 +73,7 @@ export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         body: JSON.stringify({
           quoteId: quote.quoteId,
           addressTo: addressTo.trim(),
-          ...(fixed ? { inQuoteId: quote.rateId, refundAddress: refundAddress?.trim() } : {}),
+          ...(fixed ? { refundAddress: refundAddress?.trim() } : {}),
         }),
       });
       if (!res.ok) {
