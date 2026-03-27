@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import type { Quote, OrderDetails } from '@/lib/types';
 import type { Token } from './TokenSelector';
 
@@ -38,12 +38,14 @@ interface CexSwapModalProps {
   toToken: Token;
   fromAmount: string;
   addressTo: string;
+  fixed?: boolean;
+  refundAddress?: string;
   onClose: () => void;
 }
 
 type Phase = 'confirm' | 'loading' | 'success';
 
-export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo, onClose }: CexSwapModalProps) {
+export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo, fixed, refundAddress, onClose }: CexSwapModalProps) {
   const [phase, setPhase] = useState<Phase>('confirm');
   const [error, setError] = useState<string | null>(null);
   const [depositAddress, setDepositAddress] = useState<string>('');
@@ -51,22 +53,14 @@ export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
   const [order, setOrder] = useState<OrderDetails | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Poll order details every 60s after exchange is created
-  useEffect(() => {
-    if (!houdiniId) return;
-    const fetchOrder = async () => {
-      try {
-        const res = await fetch(`/api/orders/${houdiniId}`);
-        if (!res.ok) return;
-        const data: OrderDetails = await res.json();
-        setOrder(data);
-        if (data.status >= 4) clearInterval(interval);
-      } catch { /* ignore */ }
-    };
-    fetchOrder();
-    const interval = setInterval(fetchOrder, 60_000);
-    return () => clearInterval(interval);
-  }, [houdiniId]);
+  async function fetchOrder(id: string) {
+    try {
+      const res = await fetch(`/api/orders/${id}`);
+      if (!res.ok) return;
+      const data: OrderDetails = await res.json();
+      setOrder(data);
+    } catch { /* ignore */ }
+  }
 
   async function createExchange() {
     if (!addressTo.trim()) { setError('Destination address is required'); return; }
@@ -79,6 +73,7 @@ export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         body: JSON.stringify({
           quoteId: quote.quoteId,
           addressTo: addressTo.trim(),
+          ...(fixed ? { inQuoteId: quote.rateId, refundAddress: refundAddress?.trim() } : {}),
         }),
       });
       if (!res.ok) {
@@ -89,6 +84,7 @@ export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
       setDepositAddress(data.depositAddress ?? '');
       setHoudiniId(data.houdiniId ?? '');
       setPhase('success');
+      if (data.houdiniId) await fetchOrder(data.houdiniId);
     } catch (e: any) {
       setError(e?.message ?? 'An error occurred');
       setPhase('confirm');
@@ -139,6 +135,14 @@ export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
           {/* Confirm phase */}
           {phase === 'confirm' && (
             <div className="px-5 py-4 space-y-3">
+              {fixed && (
+                <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  Fixed rate — the quoted amount is guaranteed
+                </div>
+              )}
               <div>
                 <p className="text-xs font-medium text-gray-500 mb-1">Destination address</p>
                 <p className="text-xs font-mono text-gray-800 bg-gray-50 rounded-lg px-3 py-2 break-all">{addressTo}</p>
@@ -267,9 +271,14 @@ export function CexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
                 </div>
               )}
 
-              {/* Polling note */}
+              {/* Manual refresh */}
               {!isTerminal && (
-                <p className="text-[10px] text-gray-400 text-center">Status updates every 60 seconds</p>
+                <button
+                  onClick={() => fetchOrder(houdiniId)}
+                  className="w-full text-xs text-blue-500 hover:text-blue-700 transition-colors py-1"
+                >
+                  Refresh status
+                </button>
               )}
             </div>
           )}

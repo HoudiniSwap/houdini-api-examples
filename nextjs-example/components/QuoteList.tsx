@@ -126,6 +126,11 @@ export function QuoteList({ quotes, selectedQuoteId, toToken, onSelect }: QuoteL
                         Best
                       </span>
                     )}
+                    {q.fixed && (
+                      <span className="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded-full shrink-0 leading-none">
+                        Fixed
+                      </span>
+                    )}
                     <span
                       className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 capitalize leading-none ${
                         TYPE_COLORS[q.type] ?? 'bg-gray-100 text-gray-500'

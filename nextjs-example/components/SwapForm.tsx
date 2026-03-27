@@ -41,6 +41,8 @@ export function SwapForm() {
   const address = activeAccount.address;
   const [fromAmount, setFromAmount] = useState('');
   const [addressTo, setAddressTo] = useState('');
+  const [fixed, setFixed] = useState(false);
+  const [refundAddress, setRefundAddress] = useState('');
 
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selectedQuote, setSelectedQuote] = useState<Quote | null>(null);
@@ -75,7 +77,7 @@ export function SwapForm() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [fromToken?.id, toToken?.id, fromAmount]);
+  }, [fromToken?.id, toToken?.id, fromAmount, fixed]);
 
   async function fetchQuotes() {
     if (!fromToken || !toToken) return;
@@ -88,6 +90,7 @@ export function SwapForm() {
         to: toToken.id,
         sort: 'amountOut',
         sortOrder: 'desc',
+        ...(fixed ? { fixed: 'true' } : {}),
       });
       const res = await fetch(`/api/quotes?${params}`);
       if (!res.ok) throw new Error(`Error ${res.status}`);
@@ -110,6 +113,7 @@ export function SwapForm() {
     setFromToken(toToken);
     setToToken(fromToken);
     setAddressTo('');
+    setRefundAddress('');
     setQuotes([]);
     setSelectedQuote(null);
   }
@@ -131,14 +135,17 @@ export function SwapForm() {
 
   const isDex = selectedQuote?.type === 'dex';
   const hasAddressTo = addressTo.trim().length > 0;
+  const needsRefund = fixed && !isDex;
+  const hasRefundAddress = refundAddress.trim().length > 0;
   const canSwap = !!hasAmount && !!selectedQuote && !quoteLoading && hasAddressTo &&
-    (!isDex || isConnected);
+    (!isDex || isConnected) && (!needsRefund || hasRefundAddress);
   let swapButtonLabel = 'Enter an amount';
   if (hasAmount) {
     if (quoteLoading) swapButtonLabel = 'Fetching quotes...';
     else if (!selectedQuote) swapButtonLabel = 'No route found';
     else if (isDex && !isConnected) swapButtonLabel = 'Connect wallet to swap';
     else if (!hasAddressTo) swapButtonLabel = 'Enter destination address';
+    else if (needsRefund && !hasRefundAddress) swapButtonLabel = 'Enter refund address';
     else swapButtonLabel = `Swap ${fromToken?.symbol} → ${toToken?.symbol}`;
   }
 
@@ -196,6 +203,25 @@ export function SwapForm() {
         </div>
       </div>
 
+      {/* Fixed / Float toggle */}
+      <div className="flex items-center justify-between mb-3 px-1">
+        <span className="text-xs text-gray-500">Rate type</span>
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+          <button
+            onClick={() => { setFixed(false); setRefundAddress(''); }}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${!fixed ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            Float
+          </button>
+          <button
+            onClick={() => setFixed(true)}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${fixed ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            Fixed
+          </button>
+        </div>
+      </div>
+
       {/* Destination address */}
       <div className="mb-3">
         <div className="flex items-center justify-between mb-1.5">
@@ -217,6 +243,21 @@ export function SwapForm() {
           className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 text-gray-800 placeholder-gray-300 transition-all"
         />
       </div>
+
+      {/* Refund address (fixed rate only, non-DEX) */}
+      {fixed && !isDex && (
+        <div className="mb-3">
+          <p className="text-xs font-medium text-gray-500 mb-1.5">Refund address <span className="text-red-400">*</span></p>
+          <input
+            type="text"
+            placeholder={`Enter ${fromToken?.symbol ?? 'sender'} address for refunds`}
+            value={refundAddress}
+            onChange={e => setRefundAddress(e.target.value)}
+            className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 text-gray-800 placeholder-gray-300 transition-all"
+          />
+          <p className="text-[10px] text-gray-400 mt-1">Required for fixed rate — funds return here if the swap fails.</p>
+        </div>
+      )}
 
       {/* Quote list */}
       {!quoteLoading && quotes.length > 0 && (
@@ -262,6 +303,8 @@ export function SwapForm() {
           toToken={toToken}
           fromAmount={fromAmount}
           addressTo={addressTo}
+          fixed={fixed}
+          refundAddress={refundAddress}
           onClose={() => setShowCexModal(false)}
         />
       )}

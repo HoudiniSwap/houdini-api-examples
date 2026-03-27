@@ -11,5 +11,6 @@ export async function GET(request: NextRequest) {
   }
 
   const data = await fetchFromHoudini<QuotesResponse>('/v2/quotes', { params });
+
   return NextResponse.json(data);
 }

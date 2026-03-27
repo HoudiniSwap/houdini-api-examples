@@ -286,6 +286,8 @@ export interface Quote {
   min?: number;
   max?: number;
   rateId?: string;
+  fixed?: boolean | null;
+  validUntil?: string | null;
   requiresApproval?: boolean;
   raw?: any;
 }

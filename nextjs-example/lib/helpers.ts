@@ -51,9 +51,9 @@ export async function fetchFromHoudini<T = any>(
   if (params) {
     url += `?${new URLSearchParams(params as Record<string, string>).toString()}`;
   }
-  console.log('url', url)
+
   const headers: Record<string, string> = {
-    Authorization: `${process.env.HOUDINI_API_KEY}:${process.env.HOUDINI_API_SECRET}`,
+    'partner-id': process.env.HOUDINI_API_KEY!,
     'x-user-ip': '192.168.1.1',
     'x-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'x-user-timezone': 'America/New_York',
