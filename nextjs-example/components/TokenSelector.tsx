@@ -7,6 +7,9 @@ export interface Token {
   symbol: string;
   name: string;
   icon?: string;
+  /** Contract address; null for a chain's native coin. */
+  address?: string | null;
+  decimals?: number;
   chainData?: {
     chainId: number;
     shortName: string;
