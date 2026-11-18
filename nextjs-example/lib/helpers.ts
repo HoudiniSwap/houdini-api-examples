@@ -53,7 +53,7 @@ export async function fetchFromHoudini<T = any>(
   }
 
   const headers: Record<string, string> = {
-    'partner-id': process.env.HOUDINI_API_KEY!,
+    'Authorization': `${process.env.HOUDINI_API_KEY}:${process.env.HOUDINI_API_SECRET}`,
     'x-user-ip': '192.168.1.1',
     'x-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'x-user-timezone': 'America/New_York',
