@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { createInterface } from 'node:readline/promises';
 import type {
   FetchOptions,
 } from '../src/types';
@@ -102,4 +103,25 @@ export async function fetchFromHoudini<T = any>(endpoint: string, options: Fetch
   }
 
   return await response.json() as T;
+}
+
+/**
+ * Asks before the private key signs or sends anything. The DEX example holds a
+ * raw key and signs without a wallet prompt, so this is the only point where a
+ * person sees what is about to happen. HOUDINI_AUTO_CONFIRM=1 skips it for an
+ * unattended run: only do that with `trustedContracts` filled in, since nothing
+ * else then stands between an API response and your key.
+ */
+export async function confirmStep(summary: string): Promise<void> {
+  if (process.env.HOUDINI_AUTO_CONFIRM === '1') return;
+  if (!process.stdin.isTTY) {
+    throw new Error('No terminal to confirm on; set HOUDINI_AUTO_CONFIRM=1 to sign and send unattended');
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(`${summary}\n   Proceed? [y/N] `);
+    if (answer.trim().toLowerCase() !== 'y') throw new Error('Cancelled: nothing was signed or sent');
+  } finally {
+    rl.close();
+  }
 }
