@@ -12,6 +12,7 @@ import {
   assertTypedData,
   assertTypedDataChain,
   assertTypedDataReceiver,
+  assertTransferAuthorization,
   buildSwapIntent,
   maxApprovalAmount,
   type SwapIntent,
@@ -170,3 +171,71 @@ test('assertReceiver', () => {
   assert.throws(() => assertReceiver({ receiverAddress: ATTACKER }, usdc), /pays out to/);
   assert.throws(() => assertReceiver({}, usdc), /pays out to/);
 });
+
+const transferAuth = (overrides: Record<string, unknown> = {}, token = USDC) => ({
+  domain: { name: 'USD Coin', chainId: 8453, verifyingContract: token },
+  primaryType: 'TransferWithAuthorization',
+  message: { from: USER, to: ROUTER, value: parseUnits('15', 6).toString(), validAfter: '0', validBefore: '0', nonce: '0x00', ...overrides },
+});
+
+test('assertTransferAuthorization bounds an EIP-3009 authorization to the signer, the token and the amount sold', () => {
+  assertTransferAuthorization(transferAuth(), usdc);
+  assert.throws(() => assertTransferAuthorization(transferAuth({ value: parseUnits('16', 6).toString() }), usdc), /exceeds the amount sold/);
+  assert.throws(() => assertTransferAuthorization(transferAuth({ from: ATTACKER }), usdc), /not the signing wallet/);
+  assert.throws(() => assertTransferAuthorization(transferAuth({}, OTHER_TOKEN), usdc), /not the token being sold/);
+  const receive = { ...transferAuth({ value: maxUint256.toString() }), primaryType: 'ReceiveWithAuthorization' };
+  assert.throws(() => assertTypedData(receive, usdc), /exceeds the amount sold/);
+});
+
+describeTrusted();
+function describeTrusted() {
+  const trusted: SwapIntent = { ...usdc, trustedContracts: [ROUTER] };
+
+  test('trustedContracts: approval spender', () => {
+    assertApproval(approve(ROUTER, parseUnits('15', 6)), trusted);
+    assert.throws(() => assertApproval(approve(ATTACKER, parseUnits('15', 6)), trusted), /Approval spender .* not in trustedContracts/);
+    // Permit2 and zero approvals stay allowed: Permit2 moves nothing without a bounded permit.
+    assertApproval(approve(PERMIT2_ADDRESS, maxUint256), trusted);
+    assertApproval(approve(ATTACKER, BigInt(0)), trusted);
+  });
+
+  test('trustedContracts: swap transaction target', () => {
+    assertSwapTx({ to: ROUTER, data: '0x', value: '0' }, trusted);
+    assert.throws(() => assertSwapTx({ to: ATTACKER, data: '0x', value: '0' }, trusted), /Swap transaction target .* not in trustedContracts/);
+  });
+
+  test('trustedContracts: permit spender, transfer recipient and order verifier', () => {
+    assertTypedData(permitSingle(USDC, parseUnits('15', 6)), trusted);
+    const badPermit = permitSingle(USDC, parseUnits('15', 6));
+    badPermit.message.spender = ATTACKER;
+    assert.throws(() => assertTypedData(badPermit, trusted), /Permit spender .* not in trustedContracts/);
+    assert.throws(() => assertTypedData(transferAuth({ to: ATTACKER }), trusted), /recipient .* not in trustedContracts/);
+    const order = (verifyingContract: string) => ({
+      domain: { chainId: 8453, verifyingContract },
+      primaryType: 'Order',
+      message: { receiver: OTHER_RECEIVER },
+    });
+    assertTypedData(order(ROUTER), trusted);
+    assert.throws(() => assertTypedData(order(ATTACKER), trusted), /verifying contract .* not in trustedContracts/);
+    const noVerifier = { domain: { chainId: 8453 }, primaryType: 'Order', message: { receiver: OTHER_RECEIVER } };
+    assert.throws(() => assertTypedData(noVerifier, trusted), /verifying contract undefined is not in trustedContracts/);
+    assertTypedData(noVerifier, usdc);
+  });
+
+  test('without trustedContracts those addresses are not checked', () => {
+    assertApproval(approve(ATTACKER, parseUnits('15', 6)), usdc);
+    assertSwapTx({ to: ATTACKER, data: '0x', value: '0' }, usdc);
+  });
+
+  test('buildSwapIntent carries trustedContracts through', () => {
+    const intent = buildSwapIntent({
+      fromToken: { symbol: 'USDC', address: USDC, decimals: 6, chainData: { chainId: 8453 } },
+      toToken: { chainData: { chainId: 8453 } },
+      amount: '15',
+      addressFrom: USER,
+      addressTo: USER,
+      trustedContracts: [ROUTER],
+    });
+    assert.deepEqual(intent.trustedContracts, [ROUTER]);
+  });
+}

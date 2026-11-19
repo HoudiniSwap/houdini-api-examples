@@ -7,6 +7,11 @@
  * right token, an amount bounded by the swap, the chain the user is on and the
  * receiver the user picked.
  *
+ * What these checks cannot know on their own is which contracts are the real
+ * routers, spenders and settlement contracts of the providers you route
+ * through. List them in `trustedContracts` and every spender, swap target and
+ * signature verifier is checked against that list too.
+ *
  * Keep in sync: this file is identical in node-examples/src/dexChecks.ts and
  * nextjs-example/lib/dexChecks.ts (a test in node-examples compares them).
  */
@@ -32,6 +37,12 @@ export interface SwapIntent {
   addressFrom: string;
   /** Wallet the user chose to receive the output. */
   addressTo: string;
+  /**
+   * Contracts you accept as approval or permit spender, swap transaction
+   * target and signature verifier, on this chain. Empty or absent skips that
+   * check, leaving the API as the only source for those addresses.
+   */
+  trustedContracts?: string[];
 }
 
 interface TokenFacts {
@@ -53,6 +64,7 @@ export function buildSwapIntent(input: {
   amount: string;
   addressFrom: string;
   addressTo: string;
+  trustedContracts?: string[];
 }): SwapIntent {
   const { fromToken, toToken } = input;
   const name = fromToken.symbol ?? 'the token being sold';
@@ -72,6 +84,7 @@ export function buildSwapIntent(input: {
     toChainId,
     addressFrom: input.addressFrom,
     addressTo: input.addressTo,
+    trustedContracts: input.trustedContracts,
   };
 }
 
@@ -85,6 +98,14 @@ const toBigInt = (value: unknown): bigint => {
     return BigInt(-1);
   }
 };
+
+/** Fails when `trustedContracts` is set and does not list `address`. */
+function assertTrusted(address: unknown, what: string, intent: SwapIntent): void {
+  const trusted = intent.trustedContracts;
+  if (!trusted?.length) return;
+  if (typeof address === 'string' && trusted.some((t) => sameAddress(t, address))) return;
+  throw new Error(`${what} ${String(address)} is not in trustedContracts`);
+}
 
 /** The exact amount being sold, in base units. */
 export function sellAmount(intent: SwapIntent): bigint {
@@ -131,6 +152,7 @@ export function assertApproval(
   }
 
   if (amount === BigInt(0) || sameAddress(spender, PERMIT2_ADDRESS)) return;
+  assertTrusted(spender, 'Approval spender', intent);
 
   const max = maxApprovalAmount(intent);
   if (amount > max) {
@@ -171,6 +193,7 @@ export function assertSwapTx(
   if (!native && sameAddress(tx.to, intent.fromTokenAddress)) {
     throw new Error('Swap transaction calls the token being sold directly instead of a swap contract');
   }
+  assertTrusted(tx.to, 'Swap transaction target', intent);
   return value;
 }
 
@@ -201,9 +224,9 @@ interface TypedData {
  * (`allowed: true`), which grants an unlimited allowance. Supporting one means
  * checking its spender against a relayer you trust.
  *
- * The spender cannot be checked here: it is the route's contract, which only
- * the API knows. The amount bound keeps what a wrong spender could take to the
- * swap amount.
+ * The spender is the route's contract, which only the API knows, so it is
+ * checked only against `trustedContracts`. Without that list the amount bound
+ * keeps what a wrong spender could take to the swap amount.
  */
 export function assertPermit(typedData: TypedData, intent: SwapIntent): void {
   const m = typedData.message ?? {};
@@ -227,6 +250,45 @@ export function assertPermit(typedData: TypedData, intent: SwapIntent): void {
   if (amount < BigInt(0) || amount > max) {
     throw new Error(`Permit of ${amount} exceeds the swap amount (at most ${max})`);
   }
+  assertTrusted(m.spender, 'Permit spender', intent);
+}
+
+const TRANSFER_AUTHORIZATIONS = ['TransferWithAuthorization', 'ReceiveWithAuthorization'];
+
+/**
+ * An EIP-3009 transfer authorization (USDC and others) moves tokens as soon as
+ * anyone submits it, with no allowance in between. It must come from the
+ * signing wallet, be on the token being sold, and move at most the amount sold.
+ */
+export function assertTransferAuthorization(typedData: TypedData, intent: SwapIntent): void {
+  if (!TRANSFER_AUTHORIZATIONS.includes(typedData.primaryType ?? '')) return;
+  const m = typedData.message ?? {};
+  const token = typedData.domain?.verifyingContract;
+  if (!sameAddress(token, intent.fromTokenAddress)) {
+    throw new Error(`Transfer authorization is for ${String(token)}, not the token being sold (${intent.fromTokenAddress})`);
+  }
+  if (!sameAddress(m.from, intent.addressFrom)) {
+    throw new Error(`Transfer authorization moves funds from ${m.from}, not the signing wallet ${intent.addressFrom}`);
+  }
+  const value = toBigInt(m.value);
+  const max = sellAmount(intent);
+  if (value < BigInt(0) || value > max) {
+    throw new Error(`Transfer authorization of ${value} exceeds the amount sold (${max})`);
+  }
+  assertTrusted(m.to, 'Transfer authorization recipient', intent);
+}
+
+/**
+ * Typed data that is neither a permit nor a transfer authorization (a CoW or
+ * 1inch order, say) is verified by the provider's settlement contract, so that
+ * contract is checked against `trustedContracts`.
+ */
+export function assertTypedDataVerifier(typedData: TypedData, intent: SwapIntent): void {
+  const verifier = typedData.domain?.verifyingContract;
+  if (sameAddress(verifier, PERMIT2_ADDRESS)) return;
+  if (typedData.primaryType === 'Permit' || TRANSFER_AUTHORIZATIONS.includes(typedData.primaryType ?? '')) return;
+  // No verifyingContract means nothing to match: with a list set, that fails.
+  assertTrusted(verifier, 'Signature verifying contract', intent);
 }
 
 /**
@@ -252,6 +314,8 @@ export function assertTypedDataReceiver(typedData: TypedData, intent: SwapIntent
 export function assertTypedData(typedData: TypedData, intent: SwapIntent): void {
   assertTypedDataChain(typedData, intent);
   assertPermit(typedData, intent);
+  assertTransferAuthorization(typedData, intent);
+  assertTypedDataVerifier(typedData, intent);
   assertTypedDataReceiver(typedData, intent);
 }
 
