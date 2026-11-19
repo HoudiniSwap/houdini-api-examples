@@ -217,6 +217,9 @@ function describeTrusted() {
     });
     assertTypedData(order(ROUTER), trusted);
     assert.throws(() => assertTypedData(order(ATTACKER), trusted), /verifying contract .* not in trustedContracts/);
+    const noVerifier = { domain: { chainId: 8453 }, primaryType: 'Order', message: { receiver: OTHER_RECEIVER } };
+    assert.throws(() => assertTypedData(noVerifier, trusted), /verifying contract undefined is not in trustedContracts/);
+    assertTypedData(noVerifier, usdc);
   });
 
   test('without trustedContracts those addresses are not checked', () => {
