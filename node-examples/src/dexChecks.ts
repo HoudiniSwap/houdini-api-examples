@@ -4,8 +4,11 @@
  *
  * The API builds approvals, typed data and swap transactions for you. Your
  * integration should still confirm they match what the user asked for: the
- * right token, an amount no larger than the swap, the chain the user is on and
- * the receiver the user picked.
+ * right token, an amount bounded by the swap, the chain the user is on and the
+ * receiver the user picked.
+ *
+ * Keep in sync: this file is identical in node-examples/src/dexChecks.ts and
+ * nextjs-example/lib/dexChecks.ts (a test in node-examples compares them).
  */
 
 import { decodeFunctionData, erc20Abi, parseUnits } from 'viem';
@@ -13,24 +16,86 @@ import { decodeFunctionData, erc20Abi, parseUnits } from 'viem';
 /** Uniswap's Permit2 contract, the same address on every EVM chain. */
 export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
 
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
 export interface SwapIntent {
-  /** Contract address of the token being sold. */
-  fromTokenAddress: string;
+  /** Contract address of the token being sold; null for the chain's native coin. */
+  fromTokenAddress: string | null;
   fromTokenDecimals: number;
   /** Amount being sold, in token units (e.g. "15" for 15 USDC). */
   amount: string;
   /** Chain the swap starts on. */
   chainId: number;
+  /** Chain the swap ends on. */
+  toChainId: number;
+  /** Wallet that signs and sends. */
+  addressFrom: string;
   /** Wallet the user chose to receive the output. */
   addressTo: string;
+}
+
+interface TokenFacts {
+  symbol?: string;
+  address?: string | null;
+  decimals?: number | null;
+  chainData?: { chainId?: number };
+}
+
+/**
+ * Builds the intent from the API's token documents, failing when a field the
+ * checks depend on is missing. A guessed default (decimals = 18, say) does not
+ * make a check fail safe: for a 6-decimal token it lets an approval 10^12 times
+ * too large through.
+ */
+export function buildSwapIntent(input: {
+  fromToken: TokenFacts;
+  toToken: TokenFacts;
+  amount: string;
+  addressFrom: string;
+  addressTo: string;
+}): SwapIntent {
+  const { fromToken, toToken } = input;
+  const name = fromToken.symbol ?? 'the token being sold';
+  if (typeof fromToken.decimals !== 'number') {
+    throw new Error(`No decimals for ${name}; cannot check the approval amount`);
+  }
+  const chainId = fromToken.chainData?.chainId;
+  const toChainId = toToken.chainData?.chainId;
+  if (typeof chainId !== 'number' || typeof toChainId !== 'number') {
+    throw new Error('Cannot tell which chains the swap starts and ends on');
+  }
+  return {
+    fromTokenAddress: fromToken.address ?? null,
+    fromTokenDecimals: fromToken.decimals,
+    amount: input.amount,
+    chainId,
+    toChainId,
+    addressFrom: input.addressFrom,
+    addressTo: input.addressTo,
+  };
 }
 
 const sameAddress = (a?: string | null, b?: string | null): boolean =>
   !!a && !!b && a.toLowerCase() === b.toLowerCase();
 
+const toBigInt = (value: unknown): bigint => {
+  try {
+    return BigInt(value as string | number | bigint);
+  } catch {
+    return BigInt(-1);
+  }
+};
+
+/** The exact amount being sold, in base units. */
+export function sellAmount(intent: SwapIntent): bigint {
+  return parseUnits(intent.amount, intent.fromTokenDecimals);
+}
+
 /**
- * Largest approval a swap of `amount` can need. The API rounds the amount up to
- * a whole token before encoding the approval, so allow that much and no more.
+ * Largest approval or permit a swap of `amount` can need. The API's approve
+ * step rounds the amount up to a whole token, so this allows up to the next
+ * whole token. That is loose for expensive tokens: selling 0.01 WBTC allows
+ * approving up to 1 WBTC.
  */
 export function maxApprovalAmount(intent: SwapIntent): bigint {
   const whole = Math.ceil(Number(intent.amount));
@@ -39,9 +104,10 @@ export function maxApprovalAmount(intent: SwapIntent): bigint {
 
 /**
  * An approval must be an ERC-20 `approve` on the token being sold, carry no
- * native value, and allow at most the swap amount. A zero approval (resetting
- * an existing allowance first, as some tokens require) and an approval to
- * Permit2 (which still needs a signed permit per transfer) are also accepted.
+ * native value, and allow at most `maxApprovalAmount`. A zero approval
+ * (resetting an existing allowance first, as some tokens require) is accepted,
+ * and so is any approval to Permit2: Permit2 moves nothing without a signed
+ * permit, and `assertTypedData` bounds that permit.
  */
 export function assertApproval(
   approval: { to: string; data: string; value?: string | number },
@@ -72,6 +138,42 @@ export function assertApproval(
   }
 }
 
+/**
+ * The swap transaction is what actually moves the funds. Its native value must
+ * not exceed the amount sold (a native sell) or be zero (a token sell). Some
+ * bridge routes add a native messaging fee on top: allow it explicitly with
+ * `maxNativeFee` and show it to the user, rather than leaving `value` unbounded.
+ * A token sell must also not call the token itself, where the only thing a call
+ * can do is transfer or approve it.
+ *
+ * Returns the native value, so the caller can show it.
+ */
+export function assertSwapTx(
+  tx: { to?: string; data?: string; value?: string | number | bigint },
+  intent: SwapIntent,
+  options: { maxNativeFee?: bigint } = {},
+): bigint {
+  const fee = options.maxNativeFee ?? BigInt(0);
+  const value = toBigInt(tx.value ?? 0);
+  if (value < BigInt(0)) throw new Error(`Swap transaction has an unreadable value (${tx.value})`);
+
+  const native = intent.fromTokenAddress === null;
+  const max = (native ? sellAmount(intent) : BigInt(0)) + fee;
+  if (value > max) {
+    throw new Error(
+      native
+        ? `Swap transaction sends ${value} of the native coin, more than the ${sellAmount(intent)} being sold` +
+            (fee > BigInt(0) ? ` plus a fee of at most ${fee}` : '')
+        : `Swap transaction sends ${value} of the native coin while selling a token` +
+            (fee > BigInt(0) ? ` (fee allowed: at most ${fee})` : '; pass maxNativeFee if the route charges one'),
+    );
+  }
+  if (!native && sameAddress(tx.to, intent.fromTokenAddress)) {
+    throw new Error('Swap transaction calls the token being sold directly instead of a swap contract');
+  }
+  return value;
+}
+
 /** Typed data must be bound to the chain the swap starts on, when it names one. */
 export function assertTypedDataChain(
   typedData: { domain?: { chainId?: number | string | bigint } },
@@ -82,6 +184,75 @@ export function assertTypedDataChain(
   if (Number(chainId) !== intent.chainId) {
     throw new Error(`Signature request is for chain ${chainId}, but the swap starts on chain ${intent.chainId}`);
   }
+}
+
+interface TypedData {
+  domain?: { chainId?: number | string | bigint; verifyingContract?: string };
+  primaryType?: string;
+  message?: any;
+}
+
+/**
+ * A permit is an approval by signature, and a signed one can be submitted by
+ * whoever holds it, so it gets the same bound as an approval transaction: on
+ * the token being sold, for at most `maxApprovalAmount`. Covers Permit2
+ * (PermitSingle and PermitTransferFrom) and EIP-2612 `Permit`. A batch permit,
+ * or a permit with no readable amount, fails — including a DAI-style permit
+ * (`allowed: true`), which grants an unlimited allowance. Supporting one means
+ * checking its spender against a relayer you trust.
+ *
+ * The spender cannot be checked here: it is the route's contract, which only
+ * the API knows. The amount bound keeps what a wrong spender could take to the
+ * swap amount.
+ */
+export function assertPermit(typedData: TypedData, intent: SwapIntent): void {
+  const m = typedData.message ?? {};
+  let token: unknown;
+  let amount: bigint;
+
+  if (sameAddress(typedData.domain?.verifyingContract, PERMIT2_ADDRESS)) {
+    token = m.details?.token ?? m.permitted?.token;
+    amount = toBigInt(m.details?.amount ?? m.permitted?.amount);
+  } else if (typedData.primaryType === 'Permit') {
+    token = typedData.domain?.verifyingContract;
+    amount = toBigInt(m.value);
+  } else {
+    return;
+  }
+
+  if (typeof token !== 'string' || !sameAddress(token, intent.fromTokenAddress)) {
+    throw new Error(`Permit is for ${String(token)}, not the token being sold (${intent.fromTokenAddress})`);
+  }
+  const max = maxApprovalAmount(intent);
+  if (amount < BigInt(0) || amount > max) {
+    throw new Error(`Permit of ${amount} exceeds the swap amount (at most ${max})`);
+  }
+}
+
+/**
+ * For off-chain routes the signature decides where the output goes, and it is
+ * sent with POST /exchanges, before the order exists to check. So when the
+ * message names a receiver, it must be the chosen receiver, the signing wallet
+ * itself, or zero (which these protocols read as "the signer").
+ *
+ * Skipped for cross-chain swaps: there the receiver is the bridge's account on
+ * the source chain and the real destination sits in hook data this cannot
+ * decode. `assertReceiver` still checks the order afterwards.
+ */
+export function assertTypedDataReceiver(typedData: TypedData, intent: SwapIntent): void {
+  if (intent.chainId !== intent.toChainId) return;
+  const m = typedData.message ?? {};
+  const receiver = m.receiver ?? m.recipient;
+  if (typeof receiver !== 'string') return;
+  if ([intent.addressTo, intent.addressFrom, ZERO_ADDRESS].some((ok) => sameAddress(receiver, ok))) return;
+  throw new Error(`Signature request pays out to ${receiver}, not the chosen receiver ${intent.addressTo}`);
+}
+
+/** Every check that applies to a signature request. Run it before signing. */
+export function assertTypedData(typedData: TypedData, intent: SwapIntent): void {
+  assertTypedDataChain(typedData, intent);
+  assertPermit(typedData, intent);
+  assertTypedDataReceiver(typedData, intent);
 }
 
 /** The order must pay out to the receiver the user chose. */

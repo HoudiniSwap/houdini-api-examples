@@ -6,7 +6,14 @@ import { useAccount, useSendTransaction, useSignTypedData, useConfig } from 'wag
 import { createPublicClient, http } from 'viem';
 import type { Quote, Signature, SignatureObject } from '@/lib/types';
 import type { Token } from './TokenSelector';
-import { assertApproval, assertReceiver, assertTypedDataChain, type SwapIntent } from '@/lib/dexChecks';
+import {
+  assertApproval,
+  assertReceiver,
+  assertSwapTx,
+  assertTypedData,
+  buildSwapIntent,
+  type SwapIntent,
+} from '@/lib/dexChecks';
 
 type StepStatus = 'pending' | 'active' | 'done' | 'skipped' | 'error';
 
@@ -153,7 +160,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
     const results: SignatureObject[] = [];
     for (const sig of signatures) {
       const typedData = sig.data;
-      assertTypedDataChain(typedData, intent);
+      assertTypedData(typedData, intent);
       const signature = await signTypedDataAsync({
         account: address as `0x${string}`,
         domain: typedData.domain,
@@ -193,17 +200,18 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
 
     const fromChainId = fromToken.chainData?.chainId;
 
-    // What the user asked for. Everything the API returns below is checked
-    // against it before the wallet sends or signs anything.
-    const intent: SwapIntent = {
-      fromTokenAddress: fromToken.address ?? '',
-      fromTokenDecimals: fromToken.decimals ?? 18,
-      amount: fromAmount,
-      chainId: fromChainId ?? 0,
-      addressTo,
-    };
-
     try {
+      // What the user asked for. Everything the API returns below is checked
+      // against it before the wallet sends or signs anything. Built inside the
+      // try: a token missing its decimals fails here, with the error shown.
+      const intent: SwapIntent = buildSwapIntent({
+        fromToken,
+        toToken,
+        amount: fromAmount,
+        addressFrom: address ?? '',
+        addressTo,
+      });
+
       let collectedSignatures: SignatureObject[] = [];
 
       if (quote.requiresApproval) {
@@ -308,6 +316,9 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         updateStep('broadcast', 'active', 'Confirm transaction in wallet...');
         if (fromChainId) await switchToChain(fromChainId);
 
+        // Bridge routes that charge a native messaging fee on top need
+        // { maxNativeFee } here, shown to the user before they confirm.
+        assertSwapTx(meta, intent);
         const publicClient = getViemPublicClient(fromChainId!);
         const txValue = meta.value ? BigInt(meta.value) : undefined;
 
