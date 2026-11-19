@@ -2,16 +2,17 @@
  * Houdini DEX Swap - Complete Example (TypeScript, API v2)
  *
  * Flow:
- * 0. GET /v2/tokens/{id} — contract address, decimals and chain of the token sold
+ * 0. GET /v2/tokens/{id} — contract address, decimals and chain of both tokens
  * 1. GET /v2/quotes — select quote with type: "dex"
  * 2. If requiresApproval: POST /v2/dex/approve — get approval txs + signatures
  *    a. Check, then broadcast each approval transaction
  *    b. Re-poll /v2/dex/approve until approvals array is empty (allowance confirmed)
- *    c. Check, then sign each EIP-712 signature (including chained signatures)
+ *    c. Check (chain, permit amount, receiver), then sign each EIP-712
+ *       signature (including chained signatures)
  * 3. POST /v2/exchanges — create order with quoteId, addresses, signatures
  *    Check the order pays out to the chosen receiver
- * 4. Broadcast transaction (order.metadata.to/data/value), or nothing when the
- *    route executes off-chain
+ * 4. Check, then broadcast the transaction (order.metadata.to/data/value), or
+ *    nothing when the route executes off-chain
  * 5. POST /v2/dex/confirmTx — notify Houdini of tx hash
  * 6. GET /v2/orders/{houdiniId} — poll until FINISHED
  *
@@ -27,7 +28,14 @@ import {
   validatePrivateKey,
 } from '../src/wallet';
 import { sleep, fetchFromHoudini, formatTime } from '../src/helpers';
-import { assertApproval, assertReceiver, assertTypedDataChain, type SwapIntent } from '../src/dexChecks';
+import {
+  assertApproval,
+  assertReceiver,
+  assertSwapTx,
+  assertTypedData,
+  buildSwapIntent,
+  type SwapIntent,
+} from '../src/dexChecks';
 
 dotenv.config();
 
@@ -135,7 +143,7 @@ interface V2Token {
   id: string;
   symbol: string;
   address: string | null;
-  decimals: number;
+  decimals?: number | null;
   mainnet: boolean;
   chainData: { chainId: number; kind?: string };
 }
@@ -181,7 +189,7 @@ async function processSignatures(
 
   for (const sig of signatures) {
     console.log(`   Signing ${sig.type} signature (key: ${sig.key})...`);
-    assertTypedDataChain(sig.data, intent);
+    assertTypedData(sig.data, intent);
 
     const signature = await walletClient.signTypedData({
       domain: sig.data.domain,
@@ -242,14 +250,17 @@ async function executeDexSwap(): Promise<void> {
     // ========================================================================
     // Everything the API returns below — approvals, typed data, the order — is
     // checked against what we asked for before the wallet sends or signs it.
-    const fromToken = await fetchFromHoudini<V2Token>(`/v2/tokens/${CONFIG.SWAP.fromTokenId}`);
-    const intent: SwapIntent = {
-      fromTokenAddress: fromToken.address ?? '',
-      fromTokenDecimals: fromToken.decimals,
+    const [fromToken, toToken] = await Promise.all([
+      fetchFromHoudini<V2Token>(`/v2/tokens/${CONFIG.SWAP.fromTokenId}`),
+      fetchFromHoudini<V2Token>(`/v2/tokens/${CONFIG.SWAP.toTokenId}`),
+    ]);
+    const intent: SwapIntent = buildSwapIntent({
+      fromToken,
+      toToken,
       amount: CONFIG.SWAP.amount,
-      chainId: fromToken.chainData.chainId,
+      addressFrom: CONFIG.SWAP.addressFrom,
       addressTo: CONFIG.SWAP.addressTo,
-    };
+    });
     console.log(`Selling ${fromToken.symbol} on chain ${intent.chainId}\n`);
 
     // ========================================================================
@@ -399,6 +410,9 @@ async function executeDexSwap(): Promise<void> {
     if (tx?.to && tx.data) {
       console.log('STEP 4: Broadcasting on-chain transaction...');
 
+      // Bridge routes that charge a native messaging fee on top need
+      // { maxNativeFee } here; the value is printed by broadcastTx.
+      assertSwapTx(tx, intent);
       txHash = await broadcastTx({ to: tx.to, data: tx.data, value: tx.value }, intent.chainId);
 
       console.log(`   Tx hash: ${txHash}\n`);

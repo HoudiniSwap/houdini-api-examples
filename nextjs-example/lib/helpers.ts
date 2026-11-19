@@ -52,8 +52,18 @@ export async function fetchFromHoudini<T = any>(
     url += `?${new URLSearchParams(params as Record<string, string>).toString()}`;
   }
 
+  const { HOUDINI_API_KEY, HOUDINI_API_SECRET } = process.env;
+  if (!HOUDINI_API_KEY || !HOUDINI_API_SECRET) {
+    // Otherwise the header reads "key:undefined" and every call fails with a
+    // 401 that does not say why.
+    throw new Error('HOUDINI_API_KEY and HOUDINI_API_SECRET must both be set in the server environment');
+  }
+
+  // The x-user-* headers describe the end user. These fixed values only make
+  // the example run; a real integration forwards the user's own IP, user agent
+  // and timezone from the incoming request.
   const headers: Record<string, string> = {
-    'Authorization': `${process.env.HOUDINI_API_KEY}:${process.env.HOUDINI_API_SECRET}`,
+    'Authorization': `${HOUDINI_API_KEY}:${HOUDINI_API_SECRET}`,
     'x-user-ip': '192.168.1.1',
     'x-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'x-user-timezone': 'America/New_York',

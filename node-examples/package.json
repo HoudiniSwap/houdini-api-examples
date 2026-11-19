@@ -9,7 +9,8 @@
     "build": "tsc",
     "run:dex": "ts-node examples/dex-swap-example.ts",
     "run:standard": "ts-node examples/standard-swap-example.ts",
-    "run:private": "ts-node examples/private-swap-example.ts"
+    "run:private": "ts-node examples/private-swap-example.ts",
+    "test": "node --require ts-node/register --test src/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^25.0.6",
