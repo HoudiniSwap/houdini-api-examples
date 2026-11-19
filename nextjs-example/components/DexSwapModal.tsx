@@ -6,6 +6,14 @@ import { useAccount, useSendTransaction, useSignTypedData, useConfig } from 'wag
 import { createPublicClient, http } from 'viem';
 import type { Quote, Signature, SignatureObject } from '@/lib/types';
 import type { Token } from './TokenSelector';
+import {
+  assertApproval,
+  assertReceiver,
+  assertSwapTx,
+  assertTypedData,
+  buildSwapIntent,
+  type SwapIntent,
+} from '@/lib/dexChecks';
 
 type StepStatus = 'pending' | 'active' | 'done' | 'skipped' | 'error';
 
@@ -147,10 +155,12 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
   const processSignatures = useCallback(async (
     signatures: Signature[],
     userAddress: string,
+    intent: SwapIntent,
   ): Promise<SignatureObject[]> => {
     const results: SignatureObject[] = [];
     for (const sig of signatures) {
       const typedData = sig.data;
+      assertTypedData(typedData, intent);
       const signature = await signTypedDataAsync({
         account: address as `0x${string}`,
         domain: typedData.domain,
@@ -171,7 +181,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         }).then(r => r.json());
         const chainSigs: Signature[] = res.chainSignatures ?? res ?? [];
         if (chainSigs.length > 0) {
-          const chainResults = await processSignatures(chainSigs, userAddress);
+          const chainResults = await processSignatures(chainSigs, userAddress, intent);
           if (chainResults.length > 0) results.push(chainResults[chainResults.length - 1]);
         }
       } else {
@@ -191,6 +201,17 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
     const fromChainId = fromToken.chainData?.chainId;
 
     try {
+      // What the user asked for. Everything the API returns below is checked
+      // against it before the wallet sends or signs anything. Built inside the
+      // try: a token missing its decimals fails here, with the error shown.
+      const intent: SwapIntent = buildSwapIntent({
+        fromToken,
+        toToken,
+        amount: fromAmount,
+        addressFrom: address ?? '',
+        addressTo,
+      });
+
       let collectedSignatures: SignatureObject[] = [];
 
       if (quote.requiresApproval) {
@@ -219,6 +240,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
           }
           for (let i = 0; i < approvals.length; i++) {
             const approval = approvals[i];
+            assertApproval(approval, intent);
             updateStep('approve', 'active', `Approval ${i + 1}/${approvals.length} — confirm in wallet`);
             const hash = await sendTransactionAsync({
               to: approval.to as `0x${string}`,
@@ -253,7 +275,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         // ── Step 4: Signatures ──────────────────────────────────────────
         if (signatures.length > 0) {
           updateStep('sign', 'active', `${signatures.length} signature(s) — confirm in wallet`);
-          collectedSignatures = await processSignatures(signatures, address);
+          collectedSignatures = await processSignatures(signatures, address, intent);
           updateStep('sign', 'done', `${collectedSignatures.length} signature(s) collected`);
         } else {
           updateStep('sign', 'skipped');
@@ -285,6 +307,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
       }
       const exchange = await exchangeRes.json();
       setHoudiniId(exchange.houdiniId);
+      assertReceiver(exchange, intent);
       updateStep('execute', 'done', `Order: ${exchange.houdiniId}`);
 
       // ── Step 6: Broadcast on-chain tx (if required) ──────────────────────
@@ -293,6 +316,9 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         updateStep('broadcast', 'active', 'Confirm transaction in wallet...');
         if (fromChainId) await switchToChain(fromChainId);
 
+        // Bridge routes that charge a native messaging fee on top need
+        // { maxNativeFee } here, shown to the user before they confirm.
+        assertSwapTx(meta, intent);
         const publicClient = getViemPublicClient(fromChainId!);
         const txValue = meta.value ? BigInt(meta.value) : undefined;
 
