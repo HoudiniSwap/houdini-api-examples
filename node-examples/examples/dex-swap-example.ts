@@ -16,6 +16,11 @@
  * 5. POST /v2/dex/confirmTx — notify Houdini of tx hash
  * 6. GET /v2/orders/{houdiniId} — poll until FINISHED
  *
+ * Every signature and transaction is checked (src/dexChecks.ts), shown, and
+ * sent only after you answer y. This script holds a raw private key, so it
+ * signs without any wallet prompt: set HOUDINI_AUTO_CONFIRM=1 to run it
+ * unattended only with CONFIG.SWAP.trustedContracts filled in.
+ *
  * Usage: yarn run:dex
  */
 
@@ -27,7 +32,7 @@ import {
   getExplorerUrl,
   validatePrivateKey,
 } from '../src/wallet';
-import { sleep, fetchFromHoudini, formatTime } from '../src/helpers';
+import { sleep, fetchFromHoudini, formatTime, confirmStep } from '../src/helpers';
 import {
   assertApproval,
   assertReceiver,
@@ -52,6 +57,10 @@ const CONFIG = {
     addressFrom: process.env.EVM_WALLET_ADDRESS || '',
     addressTo:   process.env.EVM_WALLET_ADDRESS || '',
     slippage: 0.5,
+    // Routers, spenders and settlement contracts you accept on this chain. Fill
+    // it in for production: every spender, swap target and signature verifier
+    // is then checked against it. Empty skips that check.
+    trustedContracts: [] as string[],
   },
   STATUS_POLL_INTERVAL: 10_000,  // 10 seconds
   MAX_POLL_ATTEMPTS: 180,        // up to 30 minutes
@@ -159,6 +168,7 @@ async function broadcastTx(txData: { to: string; data: string; value?: string },
   console.log(`   From:  ${account.address}`);
   console.log(`   To:    ${txData.to}`);
   console.log(`   Value: ${txData.value || '0'}`);
+  await confirmStep(`   Send this transaction on chain ${chainId}?`);
 
   const { hash } = await sendTransaction(walletClient, publicClient, {
     to: txData.to as Hex,
@@ -190,6 +200,10 @@ async function processSignatures(
   for (const sig of signatures) {
     console.log(`   Signing ${sig.type} signature (key: ${sig.key})...`);
     assertTypedData(sig.data, intent);
+    await confirmStep(
+      `   ${sig.data.primaryType} for ${sig.data.domain?.verifyingContract ?? 'no contract'} on chain ${sig.data.domain?.chainId ?? '?'}:\n` +
+        `   ${JSON.stringify(sig.data.message, null, 2).replace(/\n/g, '\n   ')}\n   Sign it?`,
+    );
 
     const signature = await walletClient.signTypedData({
       domain: sig.data.domain,
@@ -260,6 +274,7 @@ async function executeDexSwap(): Promise<void> {
       amount: CONFIG.SWAP.amount,
       addressFrom: CONFIG.SWAP.addressFrom,
       addressTo: CONFIG.SWAP.addressTo,
+      trustedContracts: CONFIG.SWAP.trustedContracts,
     });
     console.log(`Selling ${fromToken.symbol} on chain ${intent.chainId}\n`);
 
