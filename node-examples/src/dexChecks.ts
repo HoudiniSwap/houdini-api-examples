@@ -287,7 +287,7 @@ export function assertTypedDataVerifier(typedData: TypedData, intent: SwapIntent
   const verifier = typedData.domain?.verifyingContract;
   if (sameAddress(verifier, PERMIT2_ADDRESS)) return;
   if (typedData.primaryType === 'Permit' || TRANSFER_AUTHORIZATIONS.includes(typedData.primaryType ?? '')) return;
-  if (verifier === undefined) return;
+  // No verifyingContract means nothing to match: with a list set, that fails.
   assertTrusted(verifier, 'Signature verifying contract', intent);
 }
 
