@@ -7,6 +7,8 @@ name: Security Scan
 #
 # Blocking:
 #   - Gitleaks on the commits the PR adds
+#   - Dependency review: new runtime dependencies with high/critical advisories
+#   - Install scripts: any new dependency that runs one
 #   - Semgrep ERROR findings the PR adds (registry packs, baseline = PR base)
 #   - actionlint on workflow files the PR changes
 # Report-only (job summary):
@@ -197,6 +199,59 @@ jobs:
           if [ "${rc}" -ne 0 ] && { [ "${rc}" -lt 10 ] || [ "${rc}" -gt 14 ]; }; then
             echo "::warning::zizmor failed with exit ${rc}; see the job summary"
           fi
+
+  # Integrators run these examples with wallet keys. Blocking on PRs: a new
+  # runtime dependency with a known high or critical vulnerability, or any new
+  # dependency that runs an install script.
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime
+
+  # The examples keep no lockfile, so one is resolved for the base and the
+  # head package.json of each project, at the same moment.
+  install-scripts:
+    name: Install scripts
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22.x"
+
+      - name: No new dependency with an install script
+        run: |
+          set -euo pipefail
+          git show "${BASE_SHA}:.github/allowed-install-scripts.txt" > "${RUNNER_TEMP}/allowed.txt" 2>/dev/null || : > "${RUNNER_TEMP}/allowed.txt"
+          failed=0
+          for project in node-examples nextjs-example; do
+            for side in base head; do
+              dir="${RUNNER_TEMP}/${project}-${side}"
+              mkdir -p "${dir}"
+              if [ "${side}" = base ]; then
+                git show "${BASE_SHA}:${project}/package.json" > "${dir}/package.json" 2>/dev/null || echo '{}' > "${dir}/package.json"
+              else
+                cp "${project}/package.json" "${dir}/package.json"
+              fi
+              (cd "${dir}" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund > /dev/null)
+            done
+            echo "== ${project}"
+            node .github/scripts/install-scripts.mjs "${RUNNER_TEMP}/${project}-base/package-lock.json" \
+              "${RUNNER_TEMP}/${project}-head/package-lock.json" "${RUNNER_TEMP}/allowed.txt" || failed=1
+          done
+          exit "${failed}"
 
   dependency-audit:
     name: Dependency audit
