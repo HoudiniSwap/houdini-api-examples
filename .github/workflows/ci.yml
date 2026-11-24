@@ -1,0 +1,40 @@
+name: CI
+
+# The node examples' tests (HS-2658), including the negative tests for the
+# checks run before signing. Runs on GitHub-hosted runners only.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  node-examples:
+    name: node-examples tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node-examples
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22.x"
+
+      # No lockfile is committed (it is gitignored), so this resolves from
+      # package.json like a fresh clone. Install scripts stay off.
+      - name: Install
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Test
+        run: npm test --if-present

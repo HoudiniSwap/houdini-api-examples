@@ -46,3 +46,7 @@ npm run dev
 | **Standard** | CEX swap with fast execution |
 | **Private** | Multi-hop routing for enhanced privacy (15–45 min) |
 | **DEX** | On-chain swap via DEX aggregators (Uniswap, CowSwap, SushiSwap, etc.) |
+
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Changes to signing, the checks before signing, the API routes or key handling need a security review before merge: see [docs/security-review.md](docs/security-review.md).
