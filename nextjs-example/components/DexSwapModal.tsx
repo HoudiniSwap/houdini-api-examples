@@ -24,6 +24,11 @@ interface Step {
   detail?: string;
 }
 
+// Routers, spenders and settlement contracts you accept, per chain. Fill it in
+// for production: every spender, swap target and signature verifier the API
+// returns is then checked against it. An empty list skips that check.
+const TRUSTED_CONTRACTS: Record<number, string[]> = {};
+
 const INITIAL_STEPS: Step[] = [
   { id: 'check',     label: 'Check requirements',    status: 'pending' },
   { id: 'approve',   label: 'Approve token',         status: 'pending' },
@@ -210,6 +215,7 @@ export function DexSwapModal({ quote, fromToken, toToken, fromAmount, addressTo,
         amount: fromAmount,
         addressFrom: address ?? '',
         addressTo,
+        trustedContracts: TRUSTED_CONTRACTS[fromChainId ?? 0],
       });
 
       let collectedSignatures: SignatureObject[] = [];
