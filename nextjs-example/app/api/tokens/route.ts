@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server';
 
-const TOKENS_URL = `${process.env.HOUDINI_API_BASE_URL}/v2/tokens`;
+const TOKENS_URL = `${process.env.HOUDINI_API_BASE_URL || 'https://api-partner.houdiniswap.com'}/v2/tokens`;
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
