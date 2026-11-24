@@ -14,7 +14,6 @@ export async function GET(request: NextRequest) {
     },
     next: { revalidate: 60 },
   });
-  console.log('res', res);
   if (!res.ok) {
     return NextResponse.json({ error: 'Failed to fetch tokens' }, { status: res.status });
   }
