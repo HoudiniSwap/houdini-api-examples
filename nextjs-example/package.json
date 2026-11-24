@@ -14,6 +14,7 @@
     "@reown/appkit-adapter-solana": "^1.8.12",
     "@reown/appkit-adapter-wagmi": "^1.8.12",
     "@tanstack/react-query": "^5.51.0",
+    "@wagmi/connectors": "6.2.0",
     "next": "^14.2.0",
     "porto": "0.2.35",
     "react": "^18.3.0",

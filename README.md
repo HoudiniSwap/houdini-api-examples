@@ -37,6 +37,8 @@ cp .env.example .env.local   # add your API key/secret
 npm run dev
 ```
 
+> **Before you deploy:** the routes under `app/api/` call Houdini with your API key and secret, and they accept requests from anyone who can reach them. As written they are for local development. Before putting the app on a public URL, put your own user authentication and rate limiting in front of them, or anyone can use your partner account through them.
+
 ---
 
 ## Swap Types
