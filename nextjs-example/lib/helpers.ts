@@ -1,6 +1,6 @@
 import type { FetchOptions } from './types';
 
-const API_BASE_URL = process.env.HOUDINI_API_BASE_URL;
+const API_BASE_URL = process.env.HOUDINI_API_BASE_URL || 'https://api-partner.houdiniswap.com';
 
 export function getStatusName(statusCode: number): string {
   const statusNames: Record<number, string> = {
